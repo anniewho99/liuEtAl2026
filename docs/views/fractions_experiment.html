@@ -348,6 +348,46 @@
   };
 
 
+  /* ---------- WINDOW / TAB LEAVING ----------
+     "Away" = tab hidden OR window lost focus (switching tabs, other app, clicking the URL bar).
+     Each leave and return is written to <base>/focusEvents/<NNNN>, and per-problem totals go in the trial record. */
+  var awayStats = {};          // puzzleId -> { count, ms }
+  var awaySince = null;        // timestamp when the current absence began
+  var awayPuzzleId = null;     // puzzle that was active when it began
+  var focusEventCount = 0;
+  function awayKey(){ return currentPuzzleId === null ? "between_trials" : currentPuzzleId; }
+  function logFocusEvent(type, extra){
+    const _i = String(focusEventCount++).padStart(4, "0");
+    writeRealtimeDatabase(basePath + "/focusEvents/" + _i, Object.assign({
+      type: type, puzzle_id: awayKey(), timestamp: new Date().toISOString()
+    }, extra || {}));
+  }
+  function userLeft(reason){
+    if (awaySince !== null) return;               // already away
+    awaySince = Date.now();
+    awayPuzzleId = awayKey();
+    if (!awayStats[awayPuzzleId]) awayStats[awayPuzzleId] = { count: 0, ms: 0 };
+    awayStats[awayPuzzleId].count += 1;
+    logFocusEvent("leave", { reason: reason });
+  }
+  function userReturned(){
+    if (awaySince === null) return;
+    const ms = Date.now() - awaySince;
+    awayStats[awayPuzzleId].ms += ms;
+    logFocusEvent("return", { away_ms: ms, left_during: awayPuzzleId });
+    awaySince = null; awayPuzzleId = null;
+  }
+  function awayFor(id){                            // totals for one puzzle, including an absence still in progress
+    const s = awayStats[id] || { count: 0, ms: 0 };
+    const ongoing = (awaySince !== null && awayPuzzleId === id) ? (Date.now() - awaySince) : 0;
+    return { count: s.count, ms: s.ms + ongoing };
+  }
+  document.addEventListener("visibilitychange", function(){
+    if (document.hidden) userLeft("hidden"); else if (document.hasFocus()) userReturned();
+  });
+  window.addEventListener("blur", function(){ userLeft("blur"); });
+  window.addEventListener("focus", function(){ if (!document.hidden) userReturned(); });
+
   var jsPsych = initJsPsych({
     display_element: $('#jspsych_target')[0],
     // survey responses are written as soon as each survey trial ends
@@ -359,7 +399,11 @@
       }
     },
     on_finish: function(){
+      userReturned();   // close any absence still open
+      let _tc = 0, _tm = 0;
+      Object.keys(awayStats).forEach(k => { _tc += awayStats[k].count; _tm += awayStats[k].ms; });
       const writes = Promise.all([
+        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm }),
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
         forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME)
       ]);
@@ -1129,6 +1173,8 @@
       skipped: !!data.user_gave_up && !data.user_answer,
       completion_time_ms: data.completion_time_ms,
       n_chat_messages: (allPuzzleChatLogs[p.id] || []).length,
+      times_left_window: awayFor(p.id).count,
+      time_away_ms: awayFor(p.id).ms,
       started_at: new Date(puzzleStartTime).toISOString(),
       timestamp: new Date().toISOString()
     });
