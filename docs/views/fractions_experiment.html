@@ -303,6 +303,9 @@
   const COND_NAMES = ["AI", "control", "AI_alternating"];
   // AI-alternating schedule over the training problems, in order. true = AI available. Edit to change the pattern.
   const ALTERNATING_PATTERN = [true, true, false, false];
+  // On the AI-off problems of the alternating condition, show the same fractions tips panel the control group gets.
+  // Set to false to leave those problems with no support at all.
+  const SHOW_TIPS_WHEN_AI_OFF = true;
 
   // TEST LINK: add ?condition=ai, ?condition=control or ?condition=alternating to force a condition.
   // A forced condition always writes to the "tests" study and skips block randomization, so it never touches real data or counts.
@@ -855,7 +858,9 @@
     }
   }
 
-  function setupPuzzle(p, showSidebar){
+  // showSidebar: true for training problems (support of some kind), false for practice/final.
+  // aiOn (training only): whether the AI chat is available on this problem. Defaults to true for non-control participants.
+  function setupPuzzle(p, showSidebar, aiOn){
     puzzleStartTime = Date.now();
     userSolved = false;
     puzzleGaveUp = false;
@@ -865,8 +870,10 @@
 
     // Set current puzzle ID for chat logging
     currentPuzzleId = p.id;
-    currentAIAvailable = !participantNoAI && !!showSidebar;
-    currentHintsAvailable = participantNoAI && !!showSidebar;
+    const aiHere = !participantNoAI && !!showSidebar && (aiOn === undefined ? true : !!aiOn);
+    const tipsHere = !!showSidebar && !aiHere && (participantNoAI || (participantAlternating && SHOW_TIPS_WHEN_AI_OFF));
+    currentAIAvailable = aiHere;
+    currentHintsAvailable = tipsHere;
 
     // Typeset MathJax content
     if (window.MathJax && window.MathJax.typesetPromise) {
@@ -875,21 +882,13 @@
 
     // Conditionally show/hide sidebar (chat for AI condition, hints for control condition)
     setTimeout(()=>{
-      if (participantNoAI) {
-        // Control condition: show hints panel for main problems, hide for pretest/final
-        if(window.chatWidget) { window.chatWidget.hideChat(); }
-        if (showSidebar) {
-          showHintsPanel();
-        } else {
-          hideHintsPanel();
-        }
-      } else {
-        // AI condition: show chat for main problems, hide for pretest/final
+      // AI chat where the AI is available, tips panel where tips are available, otherwise neither
+      if (aiHere) {
         hideHintsPanel();
-        if(window.chatWidget) {
-          if (showSidebar) { window.chatWidget.showChat(); }
-          else { window.chatWidget.hideChat(); }
-        }
+        if(window.chatWidget) { window.chatWidget.showChat(); }
+      } else {
+        if(window.chatWidget) { window.chatWidget.hideChat(); }
+        if (tipsHere) { showHintsPanel(); } else { hideHintsPanel(); }
       }
     },100);
 
@@ -1211,8 +1210,8 @@
       type: jsPsychInstructions,
       pages:[
         `<div style="width:1000px; text-align:left;">
-          <p><b>You have been randomly assigned to the mixed-practice condition.</b> On some problems you will have access to an AI assistant (ChatGPT) to help you solve them, and on other problems you will not. When it is available, the chat will appear on the right side of the screen. You can use the AI however you like -- feel free to ask it for hints, answers, or solutions.</p>
-          <p>When ChatGPT isn't available, please work on your own, and don't use other AI tools, Calculator, or Google.</p>
+          <p><b>You have been randomly assigned to the mixed-practice condition.</b> On some problems you will have access to an AI assistant (ChatGPT) to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
+          <p>On the other problems, ChatGPT will not be available. ${SHOW_TIPS_WHEN_AI_OFF ? "Instead, you will have a reference panel with tips on how to solve fractions. " : ""}We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
         </div>`
@@ -1242,7 +1241,7 @@
       html: ()=>buildPuzzleHTML(p, puzzleIndex, totalMainPuzzles),
       button_label:'Continue',
       data:{ stimulus_type:'fractions_puzzle', puzzle_id:p.id, puzzle_type:p.type, puzzle_block: p.block, puzzle_index: index + 1 },
-      on_load: ()=>setupPuzzle(p, participantNoAI ? true : aiAvailableOnTraining(puzzleIndex)), // control: tips panel always; AI: chat per schedule
+      on_load: ()=>setupPuzzle(p, true, aiAvailableOnTraining(puzzleIndex)), // training: control = tips; AI = chat; alternating = chat or tips per schedule
       on_finish: d=>finalizePuzzleData(d,p)
     });
   });
