@@ -6,7 +6,9 @@ const { defineSecret } = require("firebase-functions/params");
 
 const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 
-const MODEL = "gpt-5-chat-latest";
+// gpt-5-chat-latest (used in the original pilots) was shut down on 2026-07-23; OpenAI lists gpt-5.6-sol as its replacement.
+// Change this one line to switch models. The model OpenAI actually served is logged and returned with each reply.
+const MODEL = "gpt-5.6-sol";
 const MAX_MESSAGE_CHARS = 2000;   // guard: the endpoint is public
 const MAX_HISTORY_TURNS = 40;
 
@@ -69,10 +71,12 @@ exports.chat = onRequest(
       }
       const data = await r.json();
       const assistantMessage = data.choices[0].message.content;
+      console.log("chat model served:", data.model);
 
       res.json({
         success: true,
         message: assistantMessage,
+        model: data.model,
         conversationHistory: [
           ...history,
           { role: "user", content: message },
