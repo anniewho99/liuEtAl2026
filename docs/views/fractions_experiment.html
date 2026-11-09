@@ -291,7 +291,7 @@
   /* ---------- FIREBASE: STUDY ID, RANDOMIZATION, PARTICIPANT INFO ---------- */
   window.experimentName = "fractions";
   // Cloud Function URL (GitHub Pages cannot proxy /chat). Replace YOUR_PROJECT_ID.
-  window.CHAT_URL = "https://us-central1-YOUR_PROJECT_ID.cloudfunctions.net/chat";             // read by chat.js, sent to the /chat function
+  window.CHAT_URL = "https://us-central1-aiassist-exp.cloudfunctions.net/chat";             // read by chat.js, sent to the /chat function
   let studyId = "aiAssistFractions";
   if (new URLSearchParams(window.location.search).get("notProlific")) { studyId = "tests"; }
   const maxCompletionTimeMinutes = 30;           // slot is released if a participant does not finish in this time
