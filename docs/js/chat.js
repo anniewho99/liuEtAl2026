@@ -261,6 +261,13 @@ class ChatWidget {
     messagesContainer.appendChild(messageDiv);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
+    // Render LaTeX (\( \) and \[ \]) in AI replies. The page loads MathJax but the chat never asked it to typeset new messages.
+    if (type === 'assistant' && window.MathJax && window.MathJax.typesetPromise) {
+      window.MathJax.typesetPromise([messageDiv])
+        .then(() => { messagesContainer.scrollTop = messagesContainer.scrollHeight; })
+        .catch((err) => console.log('MathJax typeset error:', err));
+    }
+
     // Log chat messages to problem-specific chat logs for database storage
     if (typeof window.logChatMessage === 'function') {
       window.logChatMessage({

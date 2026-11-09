@@ -292,14 +292,30 @@
   window.experimentName = "fractions";
   // Cloud Function URL (GitHub Pages cannot proxy /chat). Replace YOUR_PROJECT_ID.
   window.CHAT_URL = "https://us-central1-aiassist-exp.cloudfunctions.net/chat";             // read by chat.js, sent to the /chat function
+  const urlParams = new URLSearchParams(window.location.search);
   let studyId = "aiAssistFractions";
-  if (new URLSearchParams(window.location.search).get("notProlific")) { studyId = "tests"; }
+  if (urlParams.get("notProlific")) { studyId = "tests"; }
   const maxCompletionTimeMinutes = 30;           // slot is released if a participant does not finish in this time
-  const CONDITION_NAME = "AI_VS_CONTROL";
-  // 0 = AI-assisted, 1 = self-learning control. Balanced by the framework, replaces Math.random().
-  const assignedCondition = (await blockRandomization(studyId, CONDITION_NAME, 2, maxCompletionTimeMinutes, 1))[0];
+  const CONDITION_NAME = "AI_CONTROL_ALTERNATING";
+
+  // Conditions: 0 = AI available on every training problem, 1 = self-learning control (tips panel),
+  //             2 = AI alternating (ON for 2 problems, OFF for 2, repeating)
+  const COND_NAMES = ["AI", "control", "AI_alternating"];
+  // AI-alternating schedule over the training problems, in order. true = AI available. Edit to change the pattern.
+  const ALTERNATING_PATTERN = [true, true, false, false];
+
+  // TEST LINK: add ?condition=ai, ?condition=control or ?condition=alternating to force a condition.
+  // A forced condition always writes to the "tests" study and skips block randomization, so it never touches real data or counts.
+  const forcedName = (urlParams.get("condition") || "").toLowerCase();
+  const FORCE_MAP = { ai: 0, control: 1, alternating: 2 };
+  const forced = Object.prototype.hasOwnProperty.call(FORCE_MAP, forcedName);
+  if (forced) { studyId = "tests"; }
+  const assignedCondition = forced
+    ? FORCE_MAP[forcedName]
+    : (await blockRandomization(studyId, CONDITION_NAME, 3, maxCompletionTimeMinutes, 1))[0];
   const basePath = studyId + "/participantData/" + firebaseUserId;
-  writeRealtimeDatabase(basePath + "/assignedCondition", assignedCondition === 0 ? "AI" : "control");
+  writeRealtimeDatabase(basePath + "/assignedCondition", COND_NAMES[assignedCondition]);
+  if (forced) { writeRealtimeDatabase(basePath + "/forcedCondition", true); }
   writeURLParameters(basePath + "/participantInfo");   // Prolific PID, study id, session id
   let trialCounter = 0;
   const SURVEY_TYPES = ["post_survey", "ai_usage_survey", "bot_check"];
@@ -342,7 +358,7 @@
     on_finish: function(){
       const writes = Promise.all([
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
-        finalizeBlockRandomization(studyId, CONDITION_NAME)
+        forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME)
       ]);
       // give the writes a moment to land, but never block the redirect for long
       Promise.race([writes, new Promise(r => setTimeout(r, 3000))])
@@ -352,13 +368,22 @@
 
   // Condition comes from blockRandomization (above): 1 = control / no AI
   const participantNoAI = (assignedCondition === 1);
+  const participantAlternating = (assignedCondition === 2);
+  // Is the AI available on training problem number `index` (0-based)? Always for AI, never for control, by pattern for alternating.
+  function aiAvailableOnTraining(index) {
+    if (participantNoAI) return false;
+    if (participantAlternating) return ALTERNATING_PATTERN[index % ALTERNATING_PATTERN.length];
+    return true;
+  }
+  var currentAIAvailable = false;      // set in setupPuzzle, logged with each trial
+  var currentHintsAvailable = false;
   // Attach condition to all jsPsych data
-  jsPsych.data.addProperties({ no_ai_condition: participantNoAI });
+  jsPsych.data.addProperties({ no_ai_condition: participantNoAI, condition_name: COND_NAMES[assignedCondition] });
 
   var timeline = [];
 
   /* ---------- CONSENT ---------- */
-    var consentPage = '<div style="width:1060px;" align="left"> <p><h1>UNI NAME</h1></p>\n\n<p><h2>RESEARCH INFORMATION SHEET</h2></p>\n\n<p><h3>Fractions Problem Solving Study</h3></p>\n\n<p><b>INTRODUCTION</b></p>\n\n<p>You were selected as a possible participant in this study because you are 18 years of age or older, fluent in English, and are based in the US. Your participation in this research study is voluntary.</p>\n\n<p><b>WHAT SHOULD I KNOW ABOUT A RESEARCH STUDY?</b></p>\n\n<ul>\n<li>Someone will explain this research study to you.</li>\n<li>Whether or not you take part is up to you.</li>\n<li>You can choose not to take part.</li>\n<li>You can agree to take part and later change your mind.</li>\n<li>Your decision will not be held against you.</li>\n<li>You can ask all the questions you want before you decide.</li>\n</ul>\n\n<p><b>WHY IS THIS RESEARCH BEING DONE?</b></p>\n\n<p>The purpose of this study is to better understand how people solve problems. The findings may help us gain insight into human cognition and behavior.</p>\n\n<p><b>HOW LONG WILL THE RESEARCH LAST AND WHAT WILL I NEED TO DO?</b></p>\n\n<p>Participation will take a total of about 10-15 minutes.</p>\n\n<p>If you volunteer to participate in this study, the researcher will ask you to do the following:</p>\n\n<ul>\n<li>You will read some instructions and solve fractions problems on a computer.</li>\n<li>You will be asked to solve both direct fractions calculations and word problems involving fractions.</li>\n<li>You will also be asked to answer brief questions about your experience and opinions regarding the tasks.</li>\n</ul>\n\n<p><b>ARE THERE ANY RISKS IF I PARTICIPATE?</b></p>\n\n<p>There are minimal risks including potential mild frustration from difficult problems and brief cognitive fatigue from problem-solving. These risks are no greater than those encountered in recreational puzzle activity. You may withdraw from the research study at any time without penalty. For scientific reasons, this consent form does not include information about the study hypotheses and the research questions being tested. You will be fully debriefed following your participation in the research.</p>\n\n<p><b>ARE THERE ANY BENEFITS IF I PARTICIPATE?</b></p>\n\n<p>There are no direct benefits to you as a participant. The findings from this study may help researchers better understand human problem-solving and cognition, which could contribute to improved educational methods and cognitive training programs.</p>\n\n<p><b>COMPENSATION</b></p>\n\n<p>You will receive compensation as stated in the study posting. If you withdraw from the study prior to its completion, you will be compensated for the portion of the study that you completed.</p>\n\n<p><b>CONFIDENTIALITY</b></p>\n\n<p>We will not be asking for any personally identifying information, and we will handle responses as confidentially as possible. However, we cannot guarantee the confidentiality of information transmitted over the Internet. To minimize this risk, data will be encrypted on transfer and storage and will only be accessible to qualified lab personnel. This anonymized data may be shared with the scientific community.</p>\n\n<p><b>WHO CAN I CONTACT IF I HAVE QUESTIONS ABOUT THIS STUDY?</b></p>\n\n<p><b>Research Team:</b><br>\nProfessor Rachit Dubey<br>\nEmail: rdubey@ucla.edu</p>\n\n<p><b>UCLA Office of the Human Research Protection Program (OHRPP):</b><br>\nIf you have questions about your rights as a research subject, or you have concerns or suggestions and you want to talk to someone other than the researchers, you may contact the UCLA OHRPP by phone: (310) 206-2040; by email: participants@research.ucla.edu or by mail: Box 951406, Los Angeles, CA 90095-1406.</p>\n\n<p><b>CONSENT</b></p>\n\n<p>I understand the information presented above. I have been given an opportunity to ask questions and all of my questions have been answered to my satisfaction.</p>\n\n<ul>\n<li>My participation is voluntary, and I may withdraw my consent and discontinue participation at any time without penalty.</li>\n<li>I do not waive any legal rights or release the University of California, Los Angeles, its agents, or the researchers from liability for negligence.</li>\n</ul>\n\n<p>By clicking below, I hereby give my consent to participate in this research.</p>\n\n</div>';
+    var consentPage = '<div style="width:1060px;" align="left"> <p><h1>University of California, Los Angeles</h1></p>\n\n<p><h2>RESEARCH INFORMATION SHEET</h2></p>\n\n<p><h3>Fractions Problem Solving Study</h3></p>\n\n<p><b>INTRODUCTION</b></p>\n\n<p>Professor Rachit Dubey from the Department Communication at the University of California, Los Angeles are conducting a research study. You were selected as a possible participant in this study because you are 18 years of age or older, fluent in English, and are based in the US. Your participation in this research study is voluntary.</p>\n\n<p><b>WHAT SHOULD I KNOW ABOUT A RESEARCH STUDY?</b></p>\n\n<ul>\n<li>Someone will explain this research study to you.</li>\n<li>Whether or not you take part is up to you.</li>\n<li>You can choose not to take part.</li>\n<li>You can agree to take part and later change your mind.</li>\n<li>Your decision will not be held against you.</li>\n<li>You can ask all the questions you want before you decide.</li>\n</ul>\n\n<p><b>WHY IS THIS RESEARCH BEING DONE?</b></p>\n\n<p>The purpose of this study is to better understand how people solve problems. The findings may help us gain insight into human cognition and behavior.</p>\n\n<p><b>HOW LONG WILL THE RESEARCH LAST AND WHAT WILL I NEED TO DO?</b></p>\n\n<p>Participation will take a total of about 10-15 minutes.</p>\n\n<p>If you volunteer to participate in this study, the researcher will ask you to do the following:</p>\n\n<ul>\n<li>You will read some instructions and solve fractions problems on a computer.</li>\n<li>You will be asked to solve both direct fractions calculations and word problems involving fractions.</li>\n<li>You will also be asked to answer brief questions about your experience and opinions regarding the tasks.</li>\n</ul>\n\n<p><b>ARE THERE ANY RISKS IF I PARTICIPATE?</b></p>\n\n<p>There are minimal risks including potential mild frustration from difficult problems and brief cognitive fatigue from problem-solving. These risks are no greater than those encountered in recreational puzzle activity. You may withdraw from the research study at any time without penalty. For scientific reasons, this consent form does not include information about the study hypotheses and the research questions being tested. You will be fully debriefed following your participation in the research.</p>\n\n<p><b>ARE THERE ANY BENEFITS IF I PARTICIPATE?</b></p>\n\n<p>There are no direct benefits to you as a participant. The findings from this study may help researchers better understand human problem-solving and cognition, which could contribute to improved educational methods and cognitive training programs.</p>\n\n<p><b>COMPENSATION</b></p>\n\n<p>You will receive compensation as stated in the study posting. If you withdraw from the study prior to its completion, you will be compensated for the portion of the study that you completed.</p>\n\n<p><b>CONFIDENTIALITY</b></p>\n\n<p>We will not be asking for any personally identifying information, and we will handle responses as confidentially as possible. However, we cannot guarantee the confidentiality of information transmitted over the Internet. To minimize this risk, data will be encrypted on transfer and storage and will only be accessible to qualified lab personnel. This anonymized data may be shared with the scientific community.</p>\n\n<p><b>WHO CAN I CONTACT IF I HAVE QUESTIONS ABOUT THIS STUDY?</b></p>\n\n<p><b>Research Team:</b><br>\nProfessor Rachit Dubey<br>\nEmail: rdubey@ucla.edu</p>\n\n<p><b>UCLA Office of the Human Research Protection Program (OHRPP):</b><br>\nIf you have questions about your rights as a research subject, or you have concerns or suggestions and you want to talk to someone other than the researchers, you may contact the UCLA OHRPP by phone: (310) 206-2040; by email: participants@research.ucla.edu or by mail: Box 951406, Los Angeles, CA 90095-1406.</p>\n\n<p><b>CONSENT</b></p>\n\n<p>I understand the information presented above. I have been given an opportunity to ask questions and all of my questions have been answered to my satisfaction.</p>\n\n<ul>\n<li>My participation is voluntary, and I may withdraw my consent and discontinue participation at any time without penalty.</li>\n<li>I do not waive any legal rights or release the University of California, Los Angeles, its agents, or the researchers from liability for negligence.</li>\n</ul>\n\n<p>By clicking below, I hereby give my consent to participate in this research.</p>\n\n</div>';
     var noConsentPage = '<div style="width:1000px;"> <p> Thank you!\n\nYou must consent to participate.</p></div>';
 
     var consent_question = {
@@ -840,6 +865,8 @@
 
     // Set current puzzle ID for chat logging
     currentPuzzleId = p.id;
+    currentAIAvailable = !participantNoAI && !!showSidebar;
+    currentHintsAvailable = participantNoAI && !!showSidebar;
 
     // Typeset MathJax content
     if (window.MathJax && window.MathJax.typesetPromise) {
@@ -1093,7 +1120,9 @@
       puzzle_type: p.type,
       block: p.block || null,
       order: trialCounter,
-      condition: participantNoAI ? "control" : "AI",
+      condition: COND_NAMES[assignedCondition],
+      ai_available: currentAIAvailable,
+      hints_available: currentHintsAvailable,
       user_answer: data.user_answer || "",
       correct_answer: String(p.answer),
       solved: !!data.user_solved_correctly,
@@ -1177,6 +1206,19 @@
       ],
       show_clickable_nav:true
     });
+  } else if (participantAlternating) {
+    timeline.push({
+      type: jsPsychInstructions,
+      pages:[
+        `<div style="width:1000px; text-align:left;">
+          <p><b>You have been randomly assigned to the mixed-practice condition.</b> On some problems you will have access to an AI assistant (ChatGPT) to help you solve them, and on other problems you will not. When it is available, the chat will appear on the right side of the screen. You can use the AI however you like -- feel free to ask it for hints, answers, or solutions.</p>
+          <p>When ChatGPT isn't available, please work on your own, and don't use other AI tools, Calculator, or Google.</p>
+          <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
+          <p>Please press next to continue.</p>
+        </div>`
+      ],
+      show_clickable_nav:true
+    });
   } else {
     timeline.push({
       type: jsPsychInstructions,
@@ -1200,7 +1242,7 @@
       html: ()=>buildPuzzleHTML(p, puzzleIndex, totalMainPuzzles),
       button_label:'Continue',
       data:{ stimulus_type:'fractions_puzzle', puzzle_id:p.id, puzzle_type:p.type, puzzle_block: p.block, puzzle_index: index + 1 },
-      on_load: ()=>setupPuzzle(p, true), // showChat = true for initial puzzles (will show hints for control)
+      on_load: ()=>setupPuzzle(p, participantNoAI ? true : aiAvailableOnTraining(puzzleIndex)), // control: tips panel always; AI: chat per schedule
       on_finish: d=>finalizePuzzleData(d,p)
     });
   });
