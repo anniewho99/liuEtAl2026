@@ -296,28 +296,39 @@
   let studyId = "aiAssistFractions";
   if (urlParams.get("notProlific")) { studyId = "tests"; }
   const maxCompletionTimeMinutes = 30;           // slot is released if a participant does not finish in this time
-  const CONDITION_NAME = "AI_CONTROL_ALTERNATING";
+  const CONDITION_NAME = "AI_CONTROL_INTERLEAVED_BLOCK";
+  const BLOCKPOS_NAME = "AI_BLOCK_POSITION";     // second randomization: block participants get AI first or last
 
-  // Conditions: 0 = AI available on every training problem, 1 = self-learning control (tips panel),
-  //             2 = AI alternating (ON for 2 problems, OFF for 2, repeating)
-  const COND_NAMES = ["AI", "control", "AI_alternating"];
-  // AI-alternating schedule over the training problems, in order. true = AI available. Edit to change the pattern.
-  const ALTERNATING_PATTERN = [true, true, false, false];
-  // On the AI-off problems of the alternating condition, show the same fractions tips panel the control group gets.
-  // Set to false to leave those problems with no support at all.
+  // Conditions: 0 = AI on all 21 training problems, 1 = AI off (tips panel) on all 21,
+  //             2 = interleaved: AI on/off in alternating triplets (on, off, on, off, on, off, on),
+  //             3 = block: AI on for 12 problems in a row, at the START or the END of training (randomized), tips panel for the other 9
+  const COND_NAMES = ["AI", "control", "AI_interleaved", "AI_block"];
+  const N_TRIPLETS = 7;            // training = 7 triplets of (easy, medium, hard) = 21 problems
+  const BLOCK_AI_TRIPLETS = 4;     // 4 triplets x 3 = 12 AI problems in the block condition
+  // On AI-off training problems, show the fractions tips panel (all conditions). false = no support at all.
   const SHOW_TIPS_WHEN_AI_OFF = true;
 
-  // TEST LINK: add ?condition=ai, ?condition=control or ?condition=alternating to force a condition.
+  // TEST LINK: ?condition=ai | control | interleaved | block_start | block_end   (block = block_start)
   // A forced condition always writes to the "tests" study and skips block randomization, so it never touches real data or counts.
   const forcedName = (urlParams.get("condition") || "").toLowerCase();
-  const FORCE_MAP = { ai: 0, control: 1, alternating: 2 };
+  const FORCE_MAP = { ai: 0, control: 1, interleaved: 2, block: 3, block_start: 3, block_end: 3 };
   const forced = Object.prototype.hasOwnProperty.call(FORCE_MAP, forcedName);
   if (forced) { studyId = "tests"; }
   const assignedCondition = forced
     ? FORCE_MAP[forcedName]
-    : (await blockRandomization(studyId, CONDITION_NAME, 3, maxCompletionTimeMinutes, 1))[0];
+    : (await blockRandomization(studyId, CONDITION_NAME, 4, maxCompletionTimeMinutes, 1))[0];
+  // For the block condition: 0 = AI block at the start, 1 = AI block at the end
+  let blockPosition = null;
+  if (assignedCondition === 3) {
+    const _pos = forced
+      ? (forcedName === "block_end" ? 1 : 0)
+      : (await blockRandomization(studyId, BLOCKPOS_NAME, 2, maxCompletionTimeMinutes, 1))[0];
+    blockPosition = (_pos === 1) ? "end" : "start";
+  }
+  const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   const basePath = studyId + "/participantData/" + firebaseUserId;
-  writeRealtimeDatabase(basePath + "/assignedCondition", COND_NAMES[assignedCondition]);
+  writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
+  if (blockPosition) { writeRealtimeDatabase(basePath + "/blockPosition", blockPosition); }
   if (forced) { writeRealtimeDatabase(basePath + "/forcedCondition", true); }
   writeURLParameters(basePath + "/participantInfo");   // Prolific PID, study id, session id
   let trialCounter = 0;
@@ -405,7 +416,8 @@
       const writes = Promise.all([
         writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm }),
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
-        forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME)
+        forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME),
+        (forced || !blockPosition) ? Promise.resolve() : finalizeBlockRandomization(studyId, BLOCKPOS_NAME)
       ]);
       // give the writes a moment to land, but never block the redirect for long
       Promise.race([writes, new Promise(r => setTimeout(r, 3000))])
@@ -415,17 +427,23 @@
 
   // Condition comes from blockRandomization (above): 1 = control / no AI
   const participantNoAI = (assignedCondition === 1);
-  const participantAlternating = (assignedCondition === 2);
-  // Is the AI available on training problem number `index` (0-based)? Always for AI, never for control, by pattern for alternating.
+  const participantInterleaved = (assignedCondition === 2);
+  const participantBlock = (assignedCondition === 3);
+  // Is the AI available on training problem number `index` (0-based, 21 problems = 7 triplets of 3)?
+  //   AI: always. Control: never.
+  //   Interleaved: triplets 1,3,5,7 on; 2,4,6 off.
+  //   Block: first 4 triplets on (start) or last 4 triplets on (end); the AI triplets are 1-4 or 4-7.
   function aiAvailableOnTraining(index) {
+    const t = Math.floor(index / 3);
     if (participantNoAI) return false;
-    if (participantAlternating) return ALTERNATING_PATTERN[index % ALTERNATING_PATTERN.length];
+    if (participantInterleaved) return t % 2 === 0;
+    if (participantBlock) return blockPosition === "start" ? (t < BLOCK_AI_TRIPLETS) : (t >= N_TRIPLETS - BLOCK_AI_TRIPLETS);
     return true;
   }
   var currentAIAvailable = false;      // set in setupPuzzle, logged with each trial
   var currentHintsAvailable = false;
   // Attach condition to all jsPsych data
-  jsPsych.data.addProperties({ no_ai_condition: participantNoAI, condition_name: COND_NAMES[assignedCondition] });
+  jsPsych.data.addProperties({ no_ai_condition: participantNoAI, condition_name: CONDITION_LABEL, block_position: blockPosition });
 
   var timeline = [];
 
@@ -494,7 +512,7 @@
   ];
 
   var puzzles = [
-    /* ===== BLOCK 1: EASY PUZZLES (3 problems: 1 division, 1 multiplication, 1 subtraction) ===== */
+    /* ===== BLOCK 1: EASY PUZZLES (3 original + 4 new = 7 problems) ===== */
 
     /* Problem 1: Division */
     {
@@ -532,7 +550,49 @@
       block: 1
     },
 
-    /* ===== BLOCK 2: MEDIUM PUZZLES (4 problems) ===== */
+    /* NEW easy problems (4 added so there are 7 easy in total) */
+    {
+      id: "block1_4_add",
+      problem: "Calculate: \\(\\displaystyle\\frac{2}{5} + \\frac{3}{7}\\)",
+      units: "(enter as fraction)",
+      answer: 0.8286,
+      alternateAnswers: ["29/35"],
+      solutionHint: "Common denominator is 35: \\(\\displaystyle\\frac{14}{35} + \\frac{15}{35} = \\frac{29}{35}\\)",
+      type: "initial",
+      block: 1
+    },
+    {
+      id: "block1_5_div",
+      problem: "Calculate: \\(\\displaystyle\\frac{2}{7} ÷ \\frac{3}{4}\\)",
+      units: "(enter as fraction)",
+      answer: 0.381,
+      alternateAnswers: ["8/21"],
+      solutionHint: "Multiply by the reciprocal: \\(\\displaystyle\\frac{2}{7} × \\frac{4}{3} = \\frac{8}{21}\\)",
+      type: "initial",
+      block: 1
+    },
+    {
+      id: "block1_6_mult",
+      problem: "Calculate: \\(\\displaystyle\\frac{3}{7} × \\frac{5}{8}\\)",
+      units: "(enter as fraction)",
+      answer: 0.2679,
+      alternateAnswers: ["15/56"],
+      solutionHint: "Multiply numerators and denominators: \\(\\displaystyle\\frac{3×5}{7×8} = \\frac{15}{56}\\)",
+      type: "initial",
+      block: 1
+    },
+    {
+      id: "block1_7_sub",
+      problem: "Calculate: \\(\\displaystyle\\frac{5}{6} - \\frac{3}{8}\\)",
+      units: "(enter as fraction)",
+      answer: 0.4583,
+      alternateAnswers: ["11/24"],
+      solutionHint: "Common denominator is 24: \\(\\displaystyle\\frac{20}{24} - \\frac{9}{24} = \\frac{11}{24}\\)",
+      type: "initial",
+      block: 1
+    },
+
+    /* ===== BLOCK 2: MEDIUM PUZZLES (4 original + 3 new = 7 problems) ===== */
 
     /* Problem 4: Complex fraction operation */
     {
@@ -582,7 +642,39 @@
       block: 2
     },
 
-    /* ===== BLOCK 3: HARD PUZZLES (4 problems) ===== */
+    /* NEW medium problems (3 added so there are 7 medium in total) */
+    {
+      id: "block2_5_add_mult",
+      problem: "Calculate: \\(\\displaystyle\\left(\\frac{3}{5} + \\frac{1}{4}\\right) × \\frac{2}{3}\\)",
+      units: "(enter as fraction)",
+      answer: 0.5667,
+      alternateAnswers: ["17/30", "34/60"],
+      solutionHint: "First add: \\(\\displaystyle\\frac{12}{20} + \\frac{5}{20} = \\frac{17}{20}\\), then multiply: \\(\\displaystyle\\frac{17}{20} × \\frac{2}{3} = \\frac{34}{60} = \\frac{17}{30}\\)",
+      type: "initial",
+      block: 2
+    },
+    {
+      id: "block2_6_sub_div",
+      problem: "Calculate: \\(\\displaystyle\\left(\\frac{4}{5} - \\frac{1}{3}\\right) ÷ \\frac{2}{3}\\)",
+      units: "(enter as fraction)",
+      answer: 0.7,
+      alternateAnswers: ["7/10", "21/30"],
+      solutionHint: "First subtract: \\(\\displaystyle\\frac{12}{15} - \\frac{5}{15} = \\frac{7}{15}\\), then divide: \\(\\displaystyle\\frac{7}{15} ÷ \\frac{2}{3} = \\frac{7}{15} × \\frac{3}{2} = \\frac{21}{30} = \\frac{7}{10}\\)",
+      type: "initial",
+      block: 2
+    },
+    {
+      id: "block2_7_sub_mult",
+      problem: "Calculate: \\(\\displaystyle\\left(\\frac{5}{6} - \\frac{2}{5}\\right) × \\frac{3}{7}\\)",
+      units: "(enter as fraction)",
+      answer: 0.1857,
+      alternateAnswers: ["13/70", "39/210"],
+      solutionHint: "First subtract: \\(\\displaystyle\\frac{25}{30} - \\frac{12}{30} = \\frac{13}{30}\\), then multiply: \\(\\displaystyle\\frac{13}{30} × \\frac{3}{7} = \\frac{39}{210} = \\frac{13}{70}\\)",
+      type: "initial",
+      block: 2
+    },
+
+    /* ===== BLOCK 3: HARD PUZZLES (4 original + 3 new = 7 problems) ===== */
 
     /* Problem 9: Nested operations */
     {
@@ -628,6 +720,38 @@
       answer: 0.4083,
       alternateAnswers: ["49/120"],
       solutionHint: "First: \\(\\displaystyle\\frac{5}{6} - \\frac{1}{4} = \\frac{10}{12} - \\frac{3}{12} = \\frac{7}{12}\\). Second: \\(\\displaystyle\\frac{3}{5} + \\frac{1}{10} = \\frac{6}{10} + \\frac{1}{10} = \\frac{7}{10}\\). Then multiply: \\(\\displaystyle\\frac{7}{12} × \\frac{7}{10} = \\frac{49}{120}\\)",
+      type: "initial",
+      block: 3
+    },
+
+    /* NEW hard problems (3 added so there are 7 hard in total) */
+    {
+      id: "block3_5_nested",
+      problem: "Calculate: \\(\\displaystyle\\left(\\left(\\frac{2}{3} - \\frac{1}{5}\\right) × \\frac{5}{4}\\right) ÷ \\frac{3}{7}\\)",
+      units: "(enter as fraction)",
+      answer: 1.3611,
+      alternateAnswers: ["49/36", "1 13/36"],
+      solutionHint: "First subtract: \\(\\displaystyle\\frac{10}{15} - \\frac{3}{15} = \\frac{7}{15}\\), then multiply: \\(\\displaystyle\\frac{7}{15} × \\frac{5}{4} = \\frac{35}{60} = \\frac{7}{12}\\), finally divide: \\(\\displaystyle\\frac{7}{12} ÷ \\frac{3}{7} = \\frac{7}{12} × \\frac{7}{3} = \\frac{49}{36}\\)",
+      type: "initial",
+      block: 3
+    },
+    {
+      id: "block3_6_two_parens",
+      problem: "Calculate: \\(\\displaystyle\\left(\\frac{3}{4} + \\frac{1}{6}\\right) × \\left(\\frac{5}{8} - \\frac{1}{4}\\right)\\)",
+      units: "(enter as fraction)",
+      answer: 0.3438,
+      alternateAnswers: ["11/32", "33/96"],
+      solutionHint: "First: \\(\\displaystyle\\frac{3}{4} + \\frac{1}{6} = \\frac{9}{12} + \\frac{2}{12} = \\frac{11}{12}\\). Second: \\(\\displaystyle\\frac{5}{8} - \\frac{1}{4} = \\frac{5}{8} - \\frac{2}{8} = \\frac{3}{8}\\). Then multiply: \\(\\displaystyle\\frac{11}{12} × \\frac{3}{8} = \\frac{33}{96} = \\frac{11}{32}\\)",
+      type: "initial",
+      block: 3
+    },
+    {
+      id: "block3_7_mixed_ops",
+      problem: "Calculate: \\(\\displaystyle\\left(\\frac{3}{8} × \\frac{4}{5}\\right) + \\left(\\frac{5}{6} ÷ \\frac{10}{9}\\right)\\)",
+      units: "(enter as fraction)",
+      answer: 1.05,
+      alternateAnswers: ["21/20", "1 1/20"],
+      solutionHint: "First: \\(\\displaystyle\\frac{3}{8} × \\frac{4}{5} = \\frac{12}{40} = \\frac{3}{10}\\). Second: \\(\\displaystyle\\frac{5}{6} ÷ \\frac{10}{9} = \\frac{5}{6} × \\frac{9}{10} = \\frac{45}{60} = \\frac{3}{4}\\). Then add: \\(\\displaystyle\\frac{3}{10} + \\frac{3}{4} = \\frac{6}{20} + \\frac{15}{20} = \\frac{21}{20}\\)",
       type: "initial",
       block: 3
     },
@@ -915,7 +1039,7 @@
     // Set current puzzle ID for chat logging
     currentPuzzleId = p.id;
     const aiHere = !participantNoAI && !!showSidebar && (aiOn === undefined ? true : !!aiOn);
-    const tipsHere = !!showSidebar && !aiHere && (participantNoAI || (participantAlternating && SHOW_TIPS_WHEN_AI_OFF));
+    const tipsHere = !!showSidebar && !aiHere && (participantNoAI || SHOW_TIPS_WHEN_AI_OFF);
     currentAIAvailable = aiHere;
     currentHintsAvailable = tipsHere;
 
@@ -1163,7 +1287,8 @@
       puzzle_type: p.type,
       block: p.block || null,
       order: trialCounter,
-      condition: COND_NAMES[assignedCondition],
+      condition: CONDITION_LABEL,
+      block_position: blockPosition,
       ai_available: currentAIAvailable,
       hints_available: currentHintsAvailable,
       user_answer: data.user_answer || "",
@@ -1195,13 +1320,13 @@
     return shuffled;
   }
 
-  // Group initial puzzles by block and shuffle within each block
-  const block1 = shuffleArray(initialPuzzlesPool.filter(p => p.block === 1));
-  const block2 = shuffleArray(initialPuzzlesPool.filter(p => p.block === 2));
-  const block3 = shuffleArray(initialPuzzlesPool.filter(p => p.block === 3));
-
-  // Combine blocks in order (block order preserved, questions randomized within)
-  const mainPuzzles = [...block1, ...block2, ...block3];
+  // Shuffle the 7 easy, 7 medium and 7 hard problems separately, then build 7 triplets of (easy, medium, hard).
+  // Difficulty order inside every triplet is fixed; which problem lands in which triplet is random per participant.
+  const easyPool = shuffleArray(initialPuzzlesPool.filter(p => p.block === 1));
+  const mediumPool = shuffleArray(initialPuzzlesPool.filter(p => p.block === 2));
+  const hardPool = shuffleArray(initialPuzzlesPool.filter(p => p.block === 3));
+  const mainPuzzles = [];
+  for (let t = 0; t < N_TRIPLETS; t++) { mainPuzzles.push(easyPool[t], mediumPool[t], hardPool[t]); }
 
   // Final puzzles in fixed order (no randomization)
   const finalPuzzles = finalPuzzlesPool.slice();
@@ -1251,7 +1376,7 @@
       ],
       show_clickable_nav:true
     });
-  } else if (participantAlternating) {
+  } else if (participantInterleaved || participantBlock) {
     timeline.push({
       type: jsPsychInstructions,
       pages:[
