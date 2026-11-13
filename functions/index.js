@@ -16,8 +16,14 @@ function buildSystemPrompt(experiment, ctx) {
   const isReading = experiment === "reading" || (!experiment && ctx && Array.isArray(ctx.options));
   const base = isReading
     ? "You are a helpful assistant working with the user to solve a reading comprehension problem. Keep your responses concise (a few sentences max)."
-    : "You are a helpful assistant working with the user to solve a fractions problem. Keep your responses concise (a few sentences max). Do not give the final answer to the problem unless the user explicitly asks for it. Requests such as 'what is the answer?', 'just give me the answer', 'solve this', or 'solve it for me' all count as explicitly asking. If the user has not asked for the answer, help with hints, guiding questions, or the next step, and let the user work out the answer themselves.";
-  if (!ctx || !ctx.problem) return base;
+    : "You are a helpful assistant working with the user to solve a fractions problem. Keep your responses concise (a few sentences max).";
+  // Fractions only. Placed at the END of the system prompt (after the problem text) so it is not buried.
+  const answerRule = isReading ? "" :
+    "IMPORTANT RULE: Do not state the final answer to the problem, and do not complete the last step of the calculation, unless the user explicitly asks for the answer. " +
+    "Requests such as 'what is the answer?', 'just give me the answer', 'solve this', or 'solve it for me' all count as explicitly asking, and then you should give the answer. " +
+    "Otherwise (for example 'help', 'I'm stuck', 'how do I do this?', 'what's the first step?'), never reveal the final value: give a short hint, ask a guiding question, or explain only the next step, and let the user work out the answer themselves. " +
+    "This holds even if the problem looks easy or the user seems frustrated.";
+  if (!ctx || !ctx.problem) return base + (answerRule ? "\n\n" + answerRule : "");
 
   let p = base + "\n\n";
   if (isReading) {
@@ -30,7 +36,7 @@ function buildSystemPrompt(experiment, ctx) {
     p += "Here is the problem:\n" + ctx.problem + "\n\n";
     if (ctx.units) p += "Answer format: " + ctx.units + "\n\n";
   }
-  return p;
+  return p + answerRule;
 }
 
 exports.chat = onRequest(

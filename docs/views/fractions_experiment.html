@@ -421,7 +421,7 @@
       ]);
       // give the writes a moment to land, but never block the redirect for long
       Promise.race([writes, new Promise(r => setTimeout(r, 3000))])
-        .finally(() => { window.location.href = "../finish.html"; });
+        .finally(() => { window.location.href = "../finish_fractions.html"; });
     }
   });
 
