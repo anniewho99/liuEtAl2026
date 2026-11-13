@@ -16,7 +16,7 @@ function buildSystemPrompt(experiment, ctx) {
   const isReading = experiment === "reading" || (!experiment && ctx && Array.isArray(ctx.options));
   const base = isReading
     ? "You are a helpful assistant working with the user to solve a reading comprehension problem. Keep your responses concise (a few sentences max)."
-    : "You are a helpful assistant working with the user to solve a fractions problem. Keep your responses concise (a few sentences max).";
+    : "You are a helpful assistant working with the user to solve a fractions problem. Keep your responses concise (a few sentences max). Do not give the final answer to the problem unless the user explicitly asks for it. Requests such as 'what is the answer?', 'just give me the answer', 'solve this', or 'solve it for me' all count as explicitly asking. If the user has not asked for the answer, help with hints, guiding questions, or the next step, and let the user work out the answer themselves.";
   if (!ctx || !ctx.problem) return base;
 
   let p = base + "\n\n";
