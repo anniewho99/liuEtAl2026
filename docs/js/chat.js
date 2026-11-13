@@ -173,14 +173,18 @@ class ChatWidget {
       if (data.success) {
         this.conversationHistory = data.conversationHistory;
         this.removeTypingIndicator();
+        // saved with the message in the database: which model answered, which function version was live, and whether the answer guard rewrote the reply
+        this.nextMeta = { model: data.model || null, prompt_version: data.promptVersion || null, guard: data.guard || null };
         this.addMessage(data.message, 'assistant');
       } else {
         this.removeTypingIndicator();
+        this.nextMeta = { error: true };
         this.addMessage('Sorry, I encountered an error. Please try again.', 'assistant');
       }
     } catch (error) {
       console.error('Chat error:', error);
       this.removeTypingIndicator();
+      this.nextMeta = { error: true };
       this.addMessage('Sorry, I encountered an error. Please try again.', 'assistant');
     } finally {
       this.isLoading = false;
@@ -270,11 +274,13 @@ class ChatWidget {
 
     // Log chat messages to problem-specific chat logs for database storage
     if (typeof window.logChatMessage === 'function') {
-      window.logChatMessage({
+      const meta = (type === 'assistant' && this.nextMeta) ? this.nextMeta : {};
+      this.nextMeta = null;
+      window.logChatMessage(Object.assign({
         timestamp: new Date().toISOString(),
         sender: type === 'user' ? 'user' : 'assistant',
         message: content
-      });
+      }, meta));
     }
   }
 
