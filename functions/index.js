@@ -9,7 +9,7 @@ const OPENAI_API_KEY = defineSecret("OPENAI_API_KEY");
 // gpt-5-chat-latest (used in the original pilots) was shut down on 2026-07-23; OpenAI lists gpt-5.6-sol as its replacement.
 // Change this one line to switch models. The model OpenAI actually served is logged and returned with each reply.
 const MODEL = "gpt-5.6-sol";
-const PROMPT_VERSION = "answer-rule-lean-v5";   // returned with every reply so you can confirm which deploy is live
+const PROMPT_VERSION = "answer-rule-lean-guard-v6";   // returned with every reply so you can confirm which deploy is live
 const MAX_MESSAGE_CHARS = 2000;   // guard: the endpoint is public
 const MAX_HISTORY_TURNS = 40;
 
@@ -36,6 +36,47 @@ function buildSystemPrompt(experiment, ctx) {
     if (ctx.units) p += "Answer format: " + ctx.units + "\n\n";
   }
   return p + answerRule;
+}
+
+/* ---------- ANSWER GUARD (fractions only) ----------
+   The prompt asks the AI not to give the answer unless explicitly asked, but the model often solves the problem anyway.
+   So after each reply we check whether it contains the correct answer; if it does and the user did not explicitly ask,
+   we ask the model once to rewrite without the answer (and fall back to a short neutral reply if it still leaks).
+   The participant never sees the first draft. */
+function normalizeMath(s) {
+  return String(s)
+    .replace(/\\left|\\right|\\displaystyle|\\boxed|\\[,;! ]/g, "")
+    .replace(/\\[dt]?frac\s*\{\s*(\d+)\s*\}\s*\{\s*(\d+)\s*\}/g, "$1/$2")
+    .replace(/\\\(|\\\)|\\\[|\\\]|\$|[{}]/g, "")
+    .replace(/\s+/g, "");
+}
+function leaksAnswer(reply, answers) {
+  const r = normalizeMath(reply);
+  return (answers || []).some((a) => {
+    const n = normalizeMath(a);
+    if (!/\d\/\d/.test(n)) return false;               // only fraction-form answers (e.g. 21/10)
+    const esc = n.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+    return new RegExp("(?<![\\d/])" + esc + "(?!\\d)").test(r);
+  });
+}
+// Generous on purpose: if the message looks like it asks for the answer, we do not block it.
+const EXPLICIT_ASK = /\b(answer|answers|solve|solution|result|final|tell me|give me|show me|do it for me|work it out|figure it out for me|what('| i)?s? (it|the)|equals?|how much is)\b/i;
+const NEUTRAL_FALLBACK = "I can help with this. What have you tried so far, or which step are you unsure about?";
+
+async function callOpenAI(messages) {
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY.value()}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: MODEL, messages }),
+  });
+  if (!r.ok) {
+    console.error("OpenAI error", r.status, await r.text());
+    return null;
+  }
+  return r.json();
 }
 
 exports.chat = onRequest(
@@ -70,28 +111,39 @@ exports.chat = onRequest(
         { role: "user", content: message },
       ];
 
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY.value()}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ model: MODEL, messages }),
-      });
-      if (!r.ok) {
-        console.error("OpenAI error", r.status, await r.text());
+      const data = await callOpenAI(messages);
+      if (!data) {
         res.status(502).json({ success: false, error: "Failed to get chat response" });
         return;
       }
-      const data = await r.json();
-      const assistantMessage = data.choices[0].message.content;
-      console.log("chat model served:", data.model, "prompt:", PROMPT_VERSION);
+      let assistantMessage = data.choices[0].message.content;
+      let guard = null;
+
+      // Answer guard (fractions): reply revealed the answer although the user did not explicitly ask for it
+      const answers = Array.isArray(puzzleContext && puzzleContext.answers) ? puzzleContext.answers.slice(0, 10) : [];
+      if (!isReadingReq && answers.length && !EXPLICIT_ASK.test(message) && leaksAnswer(assistantMessage, answers)) {
+        guard = "regenerated";
+        const retry = await callOpenAI([
+          ...messages,
+          { role: "assistant", content: assistantMessage },
+          { role: "system", content: "Your previous reply stated the final answer, but the user did not explicitly ask for it. Write a new reply to the user's latest message that does not state the final answer or the result of the last step. Keep it concise." },
+        ]);
+        const retryText = retry && retry.choices && retry.choices[0].message.content;
+        if (retryText && !leaksAnswer(retryText, answers)) {
+          assistantMessage = retryText;
+        } else {
+          guard = "fallback";
+          assistantMessage = NEUTRAL_FALLBACK;
+        }
+      }
+      console.log("chat model served:", data.model, "prompt:", PROMPT_VERSION, "guard:", guard);
 
       res.json({
         success: true,
         message: assistantMessage,
         model: data.model,
         promptVersion: PROMPT_VERSION,
+        guard: guard,
         conversationHistory: [
           ...history,
           { role: "user", content: message },

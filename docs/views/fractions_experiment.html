@@ -802,7 +802,9 @@
       return {
         id: currentPuzzle.id || null,
         problem: currentPuzzle.problem || null,
-        units: currentPuzzle.units || null
+        units: currentPuzzle.units || null,
+        // used only by the server to detect when the AI reveals the answer without being asked (never shown to the AI)
+        answers: (currentPuzzle.alternateAnswers || []).map(String)
       };
     } catch (e) {
       return null;
