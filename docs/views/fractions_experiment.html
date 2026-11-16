@@ -332,7 +332,7 @@
   if (forced) { writeRealtimeDatabase(basePath + "/forcedCondition", true); }
   writeURLParameters(basePath + "/participantInfo");   // Prolific PID, study id, session id
   let trialCounter = 0;
-  const SURVEY_TYPES = ["post_survey", "ai_usage_survey", "bot_check"];
+  const SURVEY_TYPES = ["post_survey", "ai_usage_survey", "bot_check", "feedback"];
 
   // The module script can run after DOMContentLoaded, so run immediately if the DOM is already ready.
   function onReady(fn) {
@@ -1556,6 +1556,20 @@
       data.bot_check_response = raw !== null && raw !== '' ? parseInt(raw) : null;
       data.bot_check_correct = data.bot_check_response === 6;
     }
+  });
+
+  /* ---------- OPEN-ENDED FEEDBACK (optional, last screen) ---------- */
+  timeline.push({
+    type: jsPsychSurveyHtmlForm,
+    html: `<div style="width:700px; max-width:90vw; margin:0 auto; text-align:left;">
+      <h2 style="margin-bottom:8px;">Your feedback</h2>
+      <p style="font-size:17px; color:#444;">We would love your feedback on this experiment. Was anything confusing, frustrating, or worth mentioning? This question is optional.</p>
+      <textarea name="feedback" rows="7" maxlength="3000"
+        style="width:100%; box-sizing:border-box; font-size:17px; padding:10px; border:2px solid #999; border-radius:4px; font-family:inherit;"
+        placeholder="Type your comments here (optional)"></textarea>
+    </div>`,
+    button_label: 'Finish',
+    data: { stimulus_type: 'feedback' }
   });
 
   jsPsych.run(timeline);
