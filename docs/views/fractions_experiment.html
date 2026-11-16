@@ -399,6 +399,66 @@
   window.addEventListener("blur", function(){ userLeft("blur"); });
   window.addEventListener("focus", function(){ if (!document.hidden) userReturned(); });
 
+  /* ---------- FULL SCREEN (adapted from the Sokoban experiment) ----------
+     Entered when the participant accepts the consent form (a click, which browsers require). Keyboard Lock stops a normal
+     Esc press from leaving full screen (Chrome/Edge, needs https; holding Esc still exits). If full screen is left anyway,
+     it is re-entered on the next click or key press and a banner asks the participant to go back. Every request, enter and
+     exit is written to focusEvents, and each trial records fullscreen_exits.
+     Add ?fullscreen=0 to a test link to turn all of this off. */
+  const FULLSCREEN_ON = (urlParams.get("fullscreen") !== "0") &&
+    !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
+  var FS = { wanted: false, pending: false, finished: false };
+  var fsExits = {};            // puzzleId -> number of times full screen was left
+  function fsElement(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  const fsBanner = document.createElement("div");
+  fsBanner.textContent = "This study runs in full screen. Click anywhere or press any key to return to full screen.";
+  fsBanner.style.cssText = "display:none;position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b71c1c;color:#fff;" +
+    "text-align:center;padding:10px 16px;font:600 16px 'Open Sans',Arial,sans-serif;pointer-events:none;";
+  document.body.appendChild(fsBanner);
+  function setFsBanner(on){ fsBanner.style.display = on ? "block" : "none"; }
+  async function lockEscape(){
+    if (!navigator.keyboard || typeof navigator.keyboard.lock !== "function") return "unsupported";
+    try { await navigator.keyboard.lock(["Escape"]); return "locked"; }
+    catch (err) { return "failed: " + String((err && err.message) || err); }
+  }
+  async function requestFS(via){
+    if (!FULLSCREEN_ON || FS.finished || FS.pending || fsElement()) return;
+    FS.pending = true;
+    const el = document.documentElement;
+    let info;
+    try {
+      const p = el.requestFullscreen ? el.requestFullscreen({ navigationUI: "hide" }) : el.webkitRequestFullscreen();
+      if (p && p.then) await p;
+      info = { outcome: "entered", via: via };
+    } catch (err) {
+      info = { outcome: "failed", via: via, error: String((err && err.message) || err) };
+    }
+    FS.pending = false;
+    if (info.outcome === "entered") info.keyboard_lock = await lockEscape();
+    logFocusEvent("fullscreen_request", info);
+  }
+  function ensureFS(via){ if (FS.wanted && !FS.finished && !FS.pending && !fsElement()) requestFS(via); }
+  function onFsChange(){
+    if (fsElement()) {
+      FS.wanted = true; setFsBanner(false);
+      logFocusEvent("fullscreen_enter", { via: "change" });
+    } else if (FS.wanted && !FS.finished) {
+      fsExits[awayKey()] = (fsExits[awayKey()] || 0) + 1;
+      setFsBanner(true);
+      logFocusEvent("fullscreen_exit", { via: "change" });
+    }
+  }
+  document.addEventListener("fullscreenchange", onFsChange);
+  document.addEventListener("webkitfullscreenchange", onFsChange);
+  document.addEventListener("click", function(){ ensureFS("click_reenter"); }, true);
+  document.addEventListener("keydown", function(e){ if (e.key !== "Escape") ensureFS("key_reenter"); }, true);   // Esc itself is not a user gesture
+  function startFullscreen(via){ if (!FULLSCREEN_ON) return; FS.wanted = true; requestFS(via); }
+  function stopFullscreen(){
+    FS.finished = true; setFsBanner(false);
+    try { if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock(); } catch (e) {}
+    try { if (fsElement()) (document.exitFullscreen || document.webkitExitFullscreen).call(document); } catch (e) {}
+  }
+
   var jsPsych = initJsPsych({
     display_element: $('#jspsych_target')[0],
     // survey responses are written as soon as each survey trial ends
@@ -410,11 +470,13 @@
       }
     },
     on_finish: function(){
+      stopFullscreen();   // study is over: release Esc and leave full screen
       userReturned();   // close any absence still open
-      let _tc = 0, _tm = 0;
+      let _tc = 0, _tm = 0, _fx = 0;
       Object.keys(awayStats).forEach(k => { _tc += awayStats[k].count; _tm += awayStats[k].ms; });
+      Object.keys(fsExits).forEach(k => { _fx += fsExits[k]; });
       const writes = Promise.all([
-        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm }),
+        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm, total_fullscreen_exits: _fx }),
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
         forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME),
         (forced || !blockPosition) ? Promise.resolve() : finalizeBlockRandomization(studyId, BLOCKPOS_NAME)
@@ -448,7 +510,7 @@
   var timeline = [];
 
   /* ---------- CONSENT ---------- */
-    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>AI-Assisted Decision-Making</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about the way humans verify artificial intelligence. The survey will last about 30 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. For some of the problems, you may be able to use an AI assistant (ChatGPT) in a chat window to help you; for other problems, you will work on your own. You will also answer a few brief questions about your experience. We will record your answers, the messages you exchange with the AI assistant, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better AI agents.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
+    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>AI-Assisted Decision-Making</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about the way humans verify artificial intelligence. The survey will last about 30 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. For some of the problems, you may be able to use an AI assistant (ChatGPT) in a chat window to help you; for other problems, you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, the messages you exchange with the AI assistant, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better AI agents.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
     var noConsentPage = '<div style="width:1000px;"> <p> Thank you!\n\nYou must consent to participate.</p></div>';
 
     var consent_question = {
@@ -469,6 +531,8 @@
         var responses = JSON.parse(JSON.stringify(data.response));
         if (responses.Q0.includes('not')) {
           jsPsych.endExperiment(noConsentPage);
+        } else {
+          startFullscreen("consent");   // the consent click is the user gesture browsers require
         }
       }
     };
@@ -1301,6 +1365,7 @@
       completion_time_ms: data.completion_time_ms,
       n_chat_messages: (allPuzzleChatLogs[p.id] || []).length,
       times_left_window: awayFor(p.id).count,
+      fullscreen_exits: fsExits[p.id] || 0,
       time_away_ms: awayFor(p.id).ms,
       started_at: new Date(puzzleStartTime).toISOString(),
       timestamp: new Date().toISOString()
