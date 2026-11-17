@@ -262,25 +262,14 @@
 <body>
   <div id="jspsych_target"></div>
 
-  <!-- Hints Panel for Control Condition -->
+  <!-- Notice shown on problems (and the final test) where the AI assistant is not available -->
   <div class="hints-sidebar hidden" id="hintsSidebar">
     <div class="hints-resize-handle" id="hintsResizeHandle"></div>
     <div class="hints-header">
-      How to Solve Fractions
+      AI Assistant
     </div>
-    <div class="hints-content">
-      <div class="hint-box">
-        <h4>Addition & Subtraction</h4>
-        <p>To add or subtract fractions, first find a <strong>common denominator</strong>. Convert each fraction so they have the same denominator, then add or subtract the numerators.</p>
-      </div>
-      <div class="hint-box">
-        <h4>Multiplication</h4>
-        <p>Multiply the numerators together and multiply the denominators together.</p>
-      </div>
-      <div class="hint-box">
-        <h4>Division</h4>
-        <p>To divide fractions, multiply by the <strong>reciprocal</strong> (flip the second fraction).</p>
-      </div>
+    <div class="hints-content" style="display:flex; align-items:center; justify-content:center; text-align:center;">
+      <p style="font-size:18px; color:#555;">The AI assistant is not available for this problem.</p>
     </div>
   </div>
 </body>
@@ -299,14 +288,13 @@
   const CONDITION_NAME = "AI_CONTROL_INTERLEAVED_BLOCK";
   const BLOCKPOS_NAME = "AI_BLOCK_POSITION";     // second randomization: block participants get AI first or last
 
-  // Conditions: 0 = AI on all 21 training problems, 1 = AI off (tips panel) on all 21,
+  // Conditions: 0 = AI on all 21 training problems, 1 = AI off on all 21,
   //             2 = interleaved: AI on/off in alternating triplets (on, off, on, off, on, off, on),
-  //             3 = block: AI on for 12 problems in a row, at the START or the END of training (randomized), tips panel for the other 9
+  //             3 = block: AI on for 12 problems in a row, at the START or the END of training (randomized), AI off for the other 9
   const COND_NAMES = ["AI", "control", "AI_interleaved", "AI_block"];
   const N_TRIPLETS = 7;            // training = 7 triplets of (easy, medium, hard) = 21 problems
   const BLOCK_AI_TRIPLETS = 4;     // 4 triplets x 3 = 12 AI problems in the block condition
-  // On AI-off training problems, show the fractions tips panel (all conditions). false = no support at all.
-  const SHOW_TIPS_WHEN_AI_OFF = true;
+  // On every AI-off training problem and on the 3 final test problems, the right side of the screen says the AI assistant is not available.
 
   // TEST LINK: ?condition=ai | control | interleaved | block_start | block_end   (block = block_start)
   // A forced condition always writes to the "tests" study and skips block randomization, so it never touches real data or counts.
@@ -409,6 +397,9 @@
     !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
   var FS = { wanted: false, pending: false, finished: false };
   var fsExits = {};            // puzzleId -> number of times full screen was left
+  var fsOutMs = {};            // puzzleId -> total ms spent out of full screen (counted from the exit to the next re-entry)
+  var fsOutSince = null, fsOutPuzzle = null;
+  function fsOutFor(id){ return (fsOutMs[id] || 0) + ((fsOutSince !== null && fsOutPuzzle === id) ? (Date.now() - fsOutSince) : 0); }
   function fsElement(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
   const fsBanner = document.createElement("div");
   fsBanner.textContent = "This study runs in full screen. Click anywhere or press any key to return to full screen.";
@@ -441,9 +432,12 @@
   function onFsChange(){
     if (fsElement()) {
       FS.wanted = true; setFsBanner(false);
-      logFocusEvent("fullscreen_enter", { via: "change" });
+      let outMs = null;
+      if (fsOutSince !== null) { outMs = Date.now() - fsOutSince; fsOutMs[fsOutPuzzle] = (fsOutMs[fsOutPuzzle] || 0) + outMs; fsOutSince = null; fsOutPuzzle = null; }
+      logFocusEvent("fullscreen_enter", outMs === null ? { via: "change" } : { via: "change", out_of_fullscreen_ms: outMs });
     } else if (FS.wanted && !FS.finished) {
       fsExits[awayKey()] = (fsExits[awayKey()] || 0) + 1;
+      if (fsOutSince === null) { fsOutSince = Date.now(); fsOutPuzzle = awayKey(); }
       setFsBanner(true);
       logFocusEvent("fullscreen_exit", { via: "change" });
     }
@@ -470,13 +464,23 @@
       }
     },
     on_finish: function(){
+      if (consentDeclined) {
+        // Declined consent: no completion code, no finish page, and this person must not count as a completed participant
+        // (their condition slot is not finalized, so it is released after the timeout). Close the window if the browser allows it.
+        writeRealtimeDatabase(basePath + "/consent", "declined");
+        stopFullscreen();
+        setTimeout(function(){ try { window.close(); } catch (e) {} }, 2500);
+        return;
+      }
       stopFullscreen();   // study is over: release Esc and leave full screen
       userReturned();   // close any absence still open
-      let _tc = 0, _tm = 0, _fx = 0;
+      let _tc = 0, _tm = 0, _fx = 0, _fo = 0;
       Object.keys(awayStats).forEach(k => { _tc += awayStats[k].count; _tm += awayStats[k].ms; });
       Object.keys(fsExits).forEach(k => { _fx += fsExits[k]; });
+      Object.keys(fsOutMs).forEach(k => { _fo += fsOutMs[k]; });
+      if (fsOutSince !== null) { _fo += Date.now() - fsOutSince; }
       const writes = Promise.all([
-        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm, total_fullscreen_exits: _fx }),
+        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm, total_fullscreen_exits: _fx, total_fullscreen_out_ms: _fo }),
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
         forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME),
         (forced || !blockPosition) ? Promise.resolve() : finalizeBlockRandomization(studyId, BLOCKPOS_NAME)
@@ -503,7 +507,7 @@
     return true;
   }
   var currentAIAvailable = false;      // set in setupPuzzle, logged with each trial
-  var currentHintsAvailable = false;
+  var currentNoticeShown = false;      // "AI not available" notice on screen, logged with each trial
   // Attach condition to all jsPsych data
   jsPsych.data.addProperties({ no_ai_condition: participantNoAI, condition_name: CONDITION_LABEL, block_position: blockPosition });
 
@@ -511,7 +515,10 @@
 
   /* ---------- CONSENT ---------- */
     var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>AI-Assisted Decision-Making</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about the way humans verify artificial intelligence. The survey will last about 30 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. For some of the problems, you may be able to use an AI assistant (ChatGPT) in a chat window to help you; for other problems, you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, the messages you exchange with the AI assistant, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better AI agents.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
-    var noConsentPage = '<div style="width:1000px;"> <p> Thank you!\n\nYou must consent to participate.</p></div>';
+    var noConsentPage = '<div style="width:1000px;"><p>Thank you. You must consent in order to participate in this study.</p>' +
+      '<p>This window will close automatically if your browser allows it. If it does not, you can close this window now. ' +
+      'If you came from Prolific, please return your submission on Prolific (select "Stop without completing").</p></div>';
+    var consentDeclined = false;
 
     var consent_question = {
       type: jsPsychSurveyMultiChoice,
@@ -530,8 +537,10 @@
       on_finish: function (data) {
         var responses = JSON.parse(JSON.stringify(data.response));
         if (responses.Q0.includes('not')) {
+          consentDeclined = true;
           jsPsych.endExperiment(noConsentPage);
         } else {
+          writeRealtimeDatabase(basePath + "/consent", "agreed");
           startFullscreen("consent");   // the consent click is the user gesture browsers require
         }
       }
@@ -1092,7 +1101,7 @@
     }
   }
 
-  // showSidebar: true for training problems (support of some kind), false for practice/final.
+  // showSidebar: true for training and final problems (chat or the "not available" notice), false for the pretest.
   // aiOn (training only): whether the AI chat is available on this problem. Defaults to true for non-control participants.
   function setupPuzzle(p, showSidebar, aiOn){
     puzzleStartTime = Date.now();
@@ -1105,9 +1114,9 @@
     // Set current puzzle ID for chat logging
     currentPuzzleId = p.id;
     const aiHere = !participantNoAI && !!showSidebar && (aiOn === undefined ? true : !!aiOn);
-    const tipsHere = !!showSidebar && !aiHere && (participantNoAI || SHOW_TIPS_WHEN_AI_OFF);
+    const noticeHere = !!showSidebar && !aiHere;      // AI-off training problems and the final test (not the pretest)
     currentAIAvailable = aiHere;
-    currentHintsAvailable = tipsHere;
+    currentNoticeShown = noticeHere;
 
     // Typeset MathJax content
     if (window.MathJax && window.MathJax.typesetPromise) {
@@ -1116,13 +1125,13 @@
 
     // Conditionally show/hide sidebar (chat for AI condition, hints for control condition)
     setTimeout(()=>{
-      // AI chat where the AI is available, tips panel where tips are available, otherwise neither
+      // AI chat where the AI is available, the "not available" notice where it is not, nothing on the pretest
       if (aiHere) {
         hideHintsPanel();
         if(window.chatWidget) { window.chatWidget.showChat(); }
       } else {
         if(window.chatWidget) { window.chatWidget.hideChat(); }
-        if (tipsHere) { showHintsPanel(); } else { hideHintsPanel(); }
+        if (noticeHere) { showHintsPanel(); } else { hideHintsPanel(); }
       }
     },100);
 
@@ -1356,7 +1365,7 @@
       condition: CONDITION_LABEL,
       block_position: blockPosition,
       ai_available: currentAIAvailable,
-      hints_available: currentHintsAvailable,
+      ai_notice_shown: currentNoticeShown,
       user_answer: data.user_answer || "",
       correct_answer: String(p.answer),
       solved: !!data.user_solved_correctly,
@@ -1366,6 +1375,7 @@
       n_chat_messages: (allPuzzleChatLogs[p.id] || []).length,
       times_left_window: awayFor(p.id).count,
       fullscreen_exits: fsExits[p.id] || 0,
+      fullscreen_out_ms: fsOutFor(p.id),
       time_away_ms: awayFor(p.id).ms,
       started_at: new Date(puzzleStartTime).toISOString(),
       timestamp: new Date().toISOString()
@@ -1434,8 +1444,7 @@
       type: jsPsychInstructions,
       pages:[
         `<div style="width:1000px; text-align:left;">
-          <p><b>You have been randomly assigned to the self-learning condition.</b> In this condition, we want you to work through the fraction problems on your own. You will have access to a reference panel with tips on how to solve fractions. We highly encourage you to use paper and pen, and take your time to work through the solutions.</p>
-          <p>For some problems, the reference panel will not be available.</p>
+          <p>In this study, we want you to work through the fraction problems on your own, without an AI assistant. We highly encourage you to use paper and pen, and take your time to work through the solutions.</p>
           <p>Please don't use AI tools, Calculator, or Google to solve the problems.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
@@ -1448,8 +1457,8 @@
       type: jsPsychInstructions,
       pages:[
         `<div style="width:1000px; text-align:left;">
-          <p><b>You have been randomly assigned to the mixed-practice condition.</b> On some problems you will have access to an AI assistant (ChatGPT) to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
-          <p>On the other problems, ChatGPT will not be available. ${SHOW_TIPS_WHEN_AI_OFF ? "Instead, you will have a reference panel with tips on how to solve fractions. " : ""}We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
+          <p>On some problems you will have access to an AI assistant (ChatGPT) to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
+          <p>On the other problems, ChatGPT will not be available, and the right side of the screen will say so. We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
         </div>`
@@ -1461,7 +1470,7 @@
       type: jsPsychInstructions,
       pages:[
         `<div style="width:1000px; text-align:left;">
-          <p><b>You have been randomly assigned to the AI-assisted learning condition.</b> In this condition, you will have access to an AI assistant (ChatGPT) to help you solve problems. We encourage you to use the AI to help you work through the problems. You can use the AI however you like -- feel free to ask it for hints, answers, or solutions.</p>
+          <p>In this study, you will have access to an AI assistant (ChatGPT) to help you solve problems. We encourage you to use the AI to help you work through the problems. You can use the AI however you like -- feel free to ask it for hints, answers, or solutions.</p>
           <p>For some problems, ChatGPT won't be available. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
@@ -1471,7 +1480,7 @@
     });
   }
 
-  // Add main puzzles (with AI for AI condition, with hints panel for control condition)
+  // Add main puzzles (AI chat or the "not available" notice, per condition schedule)
   mainPuzzles.forEach((p, index)=>{
     const puzzleIndex = index; // 0-based index for progress bar
     timeline.push({
@@ -1479,14 +1488,14 @@
       html: ()=>buildPuzzleHTML(p, puzzleIndex, totalMainPuzzles),
       button_label:'Continue',
       data:{ stimulus_type:'fractions_puzzle', puzzle_id:p.id, puzzle_type:p.type, puzzle_block: p.block, puzzle_index: index + 1 },
-      on_load: ()=>setupPuzzle(p, true, aiAvailableOnTraining(puzzleIndex)), // training: control = tips; AI = chat; alternating = chat or tips per schedule
+      on_load: ()=>setupPuzzle(p, true, aiAvailableOnTraining(puzzleIndex)), // training: chat where the schedule says AI is on, otherwise the notice
       on_finish: d=>finalizePuzzleData(d,p)
     });
   });
 
 
-  /* ---------- FINAL PUZZLES WITHOUT AI ASSISTANT OR HINTS ---------- */
-  // Add final puzzles (without AI assistant or hints panel)
+  /* ---------- FINAL PUZZLES WITHOUT AI ASSISTANT ---------- */
+  // Add final puzzles (no AI assistant for anyone)
   finalPuzzles.forEach((fp, index) => {
     const puzzleIndex = mainPuzzles.length + index; // Continue from where initial puzzles ended
     timeline.push({
@@ -1494,7 +1503,7 @@
       html: ()=>buildPuzzleHTML(fp, puzzleIndex, totalMainPuzzles),
       button_label:'Continue',
       data:{ stimulus_type:'fractions_puzzle', puzzle_id:fp.id, puzzle_type:fp.type, no_ai_assistant: true, final_puzzle_index: index + 1 },
-      on_load: ()=>setupPuzzle(fp, false), // showChat = false for final puzzles (no hints either)
+      on_load: ()=>setupPuzzle(fp, true, false), // final test: no AI for anyone, the sidebar says so
       on_finish: d=>finalizePuzzleData(d,fp)
     });
   });
