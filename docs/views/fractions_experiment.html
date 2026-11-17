@@ -263,13 +263,27 @@
   <div id="jspsych_target"></div>
 
   <!-- Notice shown on problems (and the final test) where the AI assistant is not available -->
-  <div class="hints-sidebar hidden" id="hintsSidebar">
-    <div class="hints-resize-handle" id="hintsResizeHandle"></div>
-    <div class="hints-header">
-      AI Assistant
-    </div>
-    <div class="hints-content" style="display:flex; align-items:center; justify-content:center; text-align:center;">
-      <p style="font-size:18px; color:#555;">The AI assistant is not available for this problem.</p>
+  <div class="chat-sidebar hidden" id="hintsSidebar">
+    <div class="chat-resize-handle" id="hintsResizeHandle"></div>
+    <div class="chat-widget">
+      <div class="chat-container open">
+        <div class="chat-header" style="font-weight: normal; font-family: Roboto, sans-serif;">
+          ChatGPT
+        </div>
+        <div class="chat-messages">
+          <div class="message assistant-message">
+            The AI assistant is not available for this problem.
+          </div>
+        </div>
+        <div class="chat-input-container">
+          <input type="text" class="chat-input" placeholder="Ask anything" disabled />
+          <button class="chat-send" aria-label="Send" title="Send" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M12 3l4.5 4.5-1.4 1.4L13 6.8V20h-2V6.8L8.9 8.9 7.5 7.5 12 3z" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </body>
@@ -1044,7 +1058,7 @@
       document.removeEventListener('mouseup', onMouseUp);
       const currentWidth = sidebar ? parseInt(getComputedStyle(sidebar).width, 10) : null;
       if (currentWidth) {
-        try { localStorage.setItem('hintsSidebarWidth', String(currentWidth)); } catch (_) {}
+        try { localStorage.setItem('chatSidebarWidth', String(currentWidth)); } catch (_) {}
       }
     };
 
@@ -1071,7 +1085,7 @@
     const hintsSidebar = document.getElementById('hintsSidebar');
     if (hintsSidebar) {
       // Restore saved width if available
-      const savedWidth = parseInt(localStorage.getItem('hintsSidebarWidth'), 10);
+      const savedWidth = parseInt(localStorage.getItem('chatSidebarWidth'), 10);
       if (!isNaN(savedWidth) && savedWidth > 0) {
         hintsSidebar.style.width = savedWidth + 'px';
       }
