@@ -329,6 +329,10 @@
   }
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   const basePath = studyId + "/participantData/" + firebaseUserId;
+  // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
+  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions").
+  const EXPERIMENT_VERSION = "v2_unified_instructions_2026-11-18";
+  writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION);
   writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
   if (blockPosition) { writeRealtimeDatabase(basePath + "/blockPosition", blockPosition); }
   if (forced) { writeRealtimeDatabase(basePath + "/forcedCondition", true); }
@@ -523,7 +527,7 @@
   var currentAIAvailable = false;      // set in setupPuzzle, logged with each trial
   var currentNoticeShown = false;      // "AI not available" notice on screen, logged with each trial
   // Attach condition to all jsPsych data
-  jsPsych.data.addProperties({ no_ai_condition: participantNoAI, condition_name: CONDITION_LABEL, block_position: blockPosition });
+  jsPsych.data.addProperties({ experiment_version: EXPERIMENT_VERSION, no_ai_condition: participantNoAI, condition_name: CONDITION_LABEL, block_position: blockPosition });
 
   var timeline = [];
 
@@ -1452,47 +1456,22 @@
     });
   });
 
-  /* ---------- CONDITION-SPECIFIC INSTRUCTION SCREEN ---------- */
-  if (participantNoAI) {
-    timeline.push({
-      type: jsPsychInstructions,
-      pages:[
-        `<div style="width:1000px; text-align:left;">
-          <p>In this study, we want you to work through the fraction problems on your own, without an AI assistant. We highly encourage you to use paper and pen, and take your time to work through the solutions.</p>
-          <p>Please don't use AI tools, Calculator, or Google to solve the problems.</p>
-          <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
-          <p>Please press next to continue.</p>
-        </div>`
-      ],
-      show_clickable_nav:true
-    });
-  } else if (participantInterleaved || participantBlock) {
-    timeline.push({
-      type: jsPsychInstructions,
-      pages:[
-        `<div style="width:1000px; text-align:left;">
-          <p>On some problems you will have access to an AI assistant (ChatGPT) to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
-          <p>On the other problems, ChatGPT will not be available, and the right side of the screen will say so. We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
-          <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
-          <p>Please press next to continue.</p>
-        </div>`
-      ],
-      show_clickable_nav:true
-    });
-  } else {
-    timeline.push({
-      type: jsPsychInstructions,
-      pages:[
-        `<div style="width:1000px; text-align:left;">
-          <p>In this study, you will have access to an AI assistant (ChatGPT) to help you solve problems. We encourage you to use the AI to help you work through the problems. You can use the AI however you like -- feel free to ask it for hints, answers, or solutions.</p>
-          <p>For some problems, ChatGPT won't be available. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
-          <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
-          <p>Please press next to continue.</p>
-        </div>`
-      ],
-      show_clickable_nav:true
-    });
-  }
+  /* ---------- INSTRUCTION SCREEN (identical for every condition) ---------- */
+  // One shared text so the instructions never reveal or differ by condition. It matches the consent form
+  // ("you may be able to use an AI assistant for some of the problems"). Control participants never get the chat,
+  // and the right side of their screen says it is not available.
+  timeline.push({
+    type: jsPsychInstructions,
+    pages:[
+      `<div style="width:1000px; text-align:left;">
+        <p>On some problems an AI assistant (ChatGPT) may be available to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
+        <p>On the other problems, ChatGPT will not be available, and the right side of the screen will say so. We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
+        <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
+        <p>Please press next to continue.</p>
+      </div>`
+    ],
+    show_clickable_nav:true
+  });
 
   // Add main puzzles (AI chat or the "not available" notice, per condition schedule)
   mainPuzzles.forEach((p, index)=>{
