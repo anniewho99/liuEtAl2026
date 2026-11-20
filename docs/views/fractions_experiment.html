@@ -330,8 +330,8 @@
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   const basePath = studyId + "/participantData/" + firebaseUserId;
   // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
-  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions").
-  const EXPERIMENT_VERSION = "v2_shared_ai_instructions_2026-11-18";
+  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button (the redundant `skipped` field was dropped; use `gave_up`).
+  const EXPERIMENT_VERSION = "v3_posttest_easy_medium_hard_cannot_answer_2026-11-20";
   writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION);
   writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
   if (blockPosition) { writeRealtimeDatabase(basePath + "/blockPosition", blockPosition); }
@@ -852,6 +852,7 @@
     /* Final Problem 1: Complex fraction operation */
     {
       id: "final_1_complex_op",
+      difficulty: "medium",
       problem: "Calculate: \\(\\displaystyle\\left(\\frac{2}{3} + \\frac{1}{4}\\right) × \\frac{3}{5}\\)",
       units: "(enter as fraction)",
       answer: 0.55,
@@ -863,6 +864,7 @@
     /* Final Problem 2: Complex multi-operation */
     {
       id: "final_2_complex_multi",
+      difficulty: "hard",
       problem: "Calculate: \\(\\displaystyle\\left(\\frac{3}{4} - \\frac{1}{2}\\right) × \\left(\\frac{2}{3} + \\frac{1}{4}\\right)\\)",
       units: "(enter as fraction)",
       answer: 0.2292,
@@ -874,6 +876,7 @@
     /* Final Problem 3: Fraction division */
     {
       id: "final_3_div",
+      difficulty: "easy",
       problem: "Calculate: \\(\\displaystyle\\frac{5}{6} ÷ \\frac{3}{4}\\)",
       units: "(enter as fraction)",
       answer: 1.1111,
@@ -960,7 +963,7 @@
       </div>
       <div class="feedback-area"><div id="feedback"></div></div>
       <div style="text-align:center; margin-top:8px;">
-        <button id="give-up-button" class="jspsych-btn" type="button">Skip</button>
+        <button id="give-up-button" class="jspsych-btn" type="button">Cannot answer</button>
       </div>
       <div class="progress-container">
         <div class="progress-bar-wrapper">
@@ -1323,7 +1326,7 @@
         }
         // Disable answer input to prevent editing after giving up
         answerInput.disabled = true;
-        // Turn Skip button into Continue
+        // Turn the "Cannot answer" button into Continue
         convertGiveUpToContinue();
       } else {
         // Proceed directly to next question without showing answer
@@ -1379,6 +1382,7 @@
       puzzle_id: p.id,
       puzzle_type: p.type,
       block: p.block || null,
+      difficulty: p.difficulty || ({1: "easy", 2: "medium", 3: "hard"}[p.block] || null),
       order: trialCounter,
       condition: CONDITION_LABEL,
       block_position: blockPosition,
@@ -1388,7 +1392,6 @@
       correct_answer: String(p.answer),
       solved: !!data.user_solved_correctly,
       gave_up: !!data.user_gave_up,
-      skipped: !!data.user_gave_up && !data.user_answer,
       completion_time_ms: data.completion_time_ms,
       n_chat_messages: (allPuzzleChatLogs[p.id] || []).length,
       times_left_window: awayFor(p.id).count,
@@ -1423,8 +1426,9 @@
   const mainPuzzles = [];
   for (let t = 0; t < N_TRIPLETS; t++) { mainPuzzles.push(easyPool[t], mediumPool[t], hardPool[t]); }
 
-  // Final puzzles in fixed order (no randomization)
-  const finalPuzzles = finalPuzzlesPool.slice();
+  // Post-test: one easy, one medium, one hard problem, always in that fixed order (no randomization).
+  const DIFFICULTY_RANK = { easy: 0, medium: 1, hard: 2 };
+  const finalPuzzles = finalPuzzlesPool.slice().sort((a, b) => DIFFICULTY_RANK[a.difficulty] - DIFFICULTY_RANK[b.difficulty]);
 
   const totalMainPuzzles = mainPuzzles.length + finalPuzzles.length;
   const totalPretestPuzzles = pretestPuzzles.length;
