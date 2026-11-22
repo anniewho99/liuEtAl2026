@@ -1,7 +1,6 @@
 # Firebase version of the AI-assistance experiments
 
-Same task flow as the original (consent, practice, training with AI or tips panel, final no-help block).
-Only the plumbing changed: Mongo + Express are gone.
+Same task flow as the original.
 
 ## Before it runs
 1. New Firebase project (your other studies use one project each). In the console: enable **Anonymous**
@@ -29,10 +28,3 @@ Only the plumbing changed: Mongo + Express are gone.
 - `chat/<puzzle_id>/<000..>`: every chat message as it happens (timestamp, sender, message)
 - `surveys/<type>`: pre/post Likert, AI-usage question, bot check
 - `completedAt`
-
-Study ids: `aiAssistReading`, `aiAssistFractions` (change at the top of each page's module script).
-
-## Other changes
-- Fixed: `chat.js` called `getReadingChatContext`, which the fractions page never defined, so the fractions AI didn't see the problem.
-- `chat.js` now sends `experiment` so the function picks the right system prompt.
-- Chat function: same model and prompts as before, plus input length limits since the endpoint is public.
