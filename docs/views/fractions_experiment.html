@@ -330,7 +330,7 @@
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   const basePath = studyId + "/participantData/" + firebaseUserId;
   // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
-  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button (the redundant `skipped` field was dropped; use `gave_up`).
+  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button (the redundant `skipped` field was dropped; use `gave_up`); post-study surveys no longer show the side panel and the AI-use question has the new six options.
   const EXPERIMENT_VERSION = "v3_posttest_easy_medium_hard_cannot_answer_2026-11-20";
   writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION);
   writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
@@ -1519,8 +1519,16 @@
   });
 
   /* ---------- POST-SURVEY (attention check only) ---------- */
+  // The side panel (AI chat or the "not available" notice) must not stay on screen during the surveys.
+  function hideSidePanels(){
+    try { if (window.chatWidget) { window.chatWidget.hideChat(); } } catch (_) {}
+    hideHintsPanel();
+    document.body.classList.remove('split-screen-layout');
+    document.body.style.marginRight = '';
+  }
   timeline.push({
     type: jsPsychSurveyLikert,
+    on_start: hideSidePanels,
     preamble: '<div style="width:1000px;"><p>Please answer the following question.</p></div>',
     questions: [
       { prompt: 'This is a quick attention check, please select the option paying attention (10)', name: 'Attention', labels: ['1 (not paying attention)', '','','','','','','','', '10 (paying attention)'], required: true }
@@ -1536,12 +1544,12 @@
         prompt: "How did you primarily use the AI assistant (ChatGPT) while solving the problems?",
         name: 'AI_Usage_Type',
         options: [
-          'To get the solution directly',
-          'To get hints about how to approach the problem',
-          'To clarify or understand the question better',
-          'To get examples of similar problems',
-          'I did not use the AI assistant',
-          'Other'
+          'Direct answer',
+          'Partial solution',
+          'Step-by-step guide',
+          'Verify own answer',
+          'Rule clarification',
+          'Did not use AI'
         ],
         required: true
       }
