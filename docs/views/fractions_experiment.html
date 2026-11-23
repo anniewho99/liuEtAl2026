@@ -162,6 +162,32 @@
       font-size: 18px !important;
     }
 
+
+    /* ===== v4: one type scale for the question, the AI chat and the notice, and a compact chat panel ===== */
+    :root { --fs-body: clamp(19px, 0.55vw + 12px, 24px); }          /* ~20px on a laptop, 24px on a 2560px-wide screen */
+    .puzzle-problem { font-size: calc(var(--fs-body) * 1.2) !important; }
+    .answer-input   { font-size: var(--fs-body) !important; height: calc(var(--fs-body) * 2) !important; }
+    .answer-units, .feedback-area, .answer-hint { font-size: var(--fs-body) !important; }
+    /* same typeface in the task area and in the chat (the chat widget used Roboto, the task used the jsPsych font) */
+    .jspsych-display-element, .puzzle-container, .answer-input, .chat-sidebar, .chat-widget, .chat-header, .chat-input, .chat-input-container, .chat-sidebar .message {
+      font-family: 'Open Sans', Arial, Helvetica, sans-serif !important;
+    }
+    .chat-sidebar .message, .chat-sidebar .assistant-message, .chat-sidebar .user-message { font-size: var(--fs-body) !important; line-height: 1.55 !important; }
+    .chat-sidebar .chat-header { font-size: var(--fs-body) !important; padding: 12px 16px !important; }
+    .chat-sidebar .chat-input  { font-size: var(--fs-body) !important; padding: 12px 16px !important; }
+    .chat-sidebar .message code { font-size: 0.9em !important; }
+    /* panel: no longer stretched over the full screen height on tall monitors, so the header, the messages and the input stay close together and level with the problem */
+    body.split-screen-layout { background: #f8f9fa; }   /* the floating chat card sits on the same background as the task */
+    .chat-sidebar {
+      width: 40vw;
+      max-width: 680px;
+      top: 50% !important;
+      height: min(92vh, 700px) !important;
+      transform: translateY(-50%);
+      border-radius: 12px 0 0 12px;
+      overflow: hidden;
+    }
+
     /* Hints panel styles for control condition */
     .hints-sidebar {
       width: 40vw;
@@ -296,7 +322,9 @@
   // Cloud Function URL (GitHub Pages cannot proxy /chat). Replace YOUR_PROJECT_ID.
   window.CHAT_URL = "https://us-central1-aiassist-exp.cloudfunctions.net/chat";             // read by chat.js, sent to the /chat function
   const urlParams = new URLSearchParams(window.location.search);
-  let studyId = "aiAssistFractions";
+  // Firebase branch for this version of the study. Change it again whenever you want a clean, separate branch
+  // (it also gets its own condition counters). "notProlific=1" test links keep writing to "tests".
+  let studyId = "aiAssistFractionsV4";
   if (urlParams.get("notProlific")) { studyId = "tests"; }
   const maxCompletionTimeMinutes = 30;           // slot is released if a participant does not finish in this time
   const CONDITION_NAME = "AI_CONTROL_INTERLEAVED_BLOCK";
@@ -330,8 +358,8 @@
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   const basePath = studyId + "/participantData/" + firebaseUserId;
   // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
-  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button (the redundant `skipped` field was dropped; use `gave_up`); post-study surveys no longer show the side panel and the AI-use question has the new six options.
-  const EXPERIMENT_VERSION = "v3_posttest_easy_medium_hard_cannot_answer_2026-11-20";
+  // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button; v4 = v3 + new AI-use options + unified fonts/compact chat layout (the redundant `skipped` field was dropped; use `gave_up`); post-study surveys no longer show the side panel and the AI-use question has the new six options.
+  const EXPERIMENT_VERSION = "v4_posttest_emh_cannot_answer_survey_options_layout_2026-11-23";
   writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION);
   writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
   if (blockPosition) { writeRealtimeDatabase(basePath + "/blockPosition", blockPosition); }
@@ -532,7 +560,7 @@
   var timeline = [];
 
   /* ---------- CONSENT ---------- */
-    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>AI-Assisted Decision-Making</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about the way humans verify artificial intelligence. The survey will last about 20 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. For some of the problems, you may be able to use an AI assistant (ChatGPT) in a chat window to help you; for other problems, you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, the messages you exchange with the AI assistant, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better AI agents.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
+    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>AI-Assisted Decision-Making</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about the way humans verify artificial intelligence. The survey will last about 30 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. For some of the problems, you may be able to use an AI assistant (ChatGPT) in a chat window to help you; for other problems, you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, the messages you exchange with the AI assistant, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better AI agents.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
     var noConsentPage = '<div style="width:1000px;"><p>Thank you. You must consent in order to participate in this study.</p>' +
       '<p>This window will close automatically if your browser allows it. If it does not, you can close this window now. ' +
       'If you came from Prolific, please return your submission on Prolific (select "Stop without completing").</p></div>';
@@ -1289,7 +1317,7 @@
       answerInput.classList.add('incorrect');
       let feedbackHTML = '';
       if (p.solutionHint) {
-        feedbackHTML += '<br><span style="color:#666;font-size:14px;">Solution: ' + p.solutionHint + '</span>';
+        feedbackHTML += '<br><span style="color:#666;font-size:calc(var(--fs-body) * 0.85);">Solution: ' + p.solutionHint + '</span>';
       };
       document.getElementById('feedback').innerHTML = feedbackHTML;
       // Typeset MathJax in feedback
@@ -1318,7 +1346,7 @@
       // For pretest: show solution and require Continue button
       // For main experiment: proceed directly to next question
       if (isPretest) {
-        let feedbackHTML = '<span style="color:#666;font-size:14px;">Solution: ' + p.solutionHint + '</span>';
+        let feedbackHTML = '<span style="color:#666;font-size:calc(var(--fs-body) * 0.85);">Solution: ' + p.solutionHint + '</span>';
         document.getElementById('feedback').innerHTML = feedbackHTML;
         // Typeset MathJax in feedback
         if (window.MathJax && window.MathJax.typesetPromise) {
@@ -1349,7 +1377,7 @@
       answerInput.classList.add('incorrect');
       let feedbackHTML = '';
       if (p.solutionHint) {
-        feedbackHTML += '<br><span style="color:#666;font-size:14px;">Solution: ' + p.solutionHint + '</span>';
+        feedbackHTML += '<br><span style="color:#666;font-size:calc(var(--fs-body) * 0.85);">Solution: ' + p.solutionHint + '</span>';
       };
       document.getElementById('feedback').innerHTML = feedbackHTML;
       // Typeset MathJax in feedback
