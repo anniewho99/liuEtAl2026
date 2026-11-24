@@ -1,6 +1,8 @@
 // /chat proxy for the AI condition. Replaces the Express /chat route from
 // app_reading.js / app_fractions.js. Same prompts as the original, plus one sentence for fractions (answer only if explicitly asked).
 // The OpenAI key is stored as a Functions secret:  firebase functions:secrets:set OPENAI_API_KEY
+exports.pidGate = require("./pidGate_function").pidGate;
+
 const { onRequest } = require("firebase-functions/v2/https");
 const { defineSecret } = require("firebase-functions/params");
 
