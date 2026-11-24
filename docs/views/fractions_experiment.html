@@ -344,6 +344,41 @@
   const FORCE_MAP = { ai: 0, control: 1, interleaved: 2, block: 3, block_start: 3, block_end: 3 };
   const forced = Object.prototype.hasOwnProperty.call(FORCE_MAP, forcedName);
   if (forced) { studyId = "tests"; }
+
+  /* ---------- PROLIFIC ID: one attempt per person, and the record is stored under the Prolific ID ---------- */
+  const PID = (urlParams.get("PROLIFIC_PID") || "").trim().replace(/[.#$\[\]\/]/g, "_");   // Firebase keys cannot contain . # $ [ ] /
+  const isTestRun = forced || !!urlParams.get("notProlific");
+  // Server-side check: Cloud Function "pidGate" (code in pidGate_function.js). Test links skip it unless they add &pidgate=1.
+  const PID_GATE_URL = "https://us-central1-aiassist-exp.cloudfunctions.net/pidGate";
+  const PID_GATE_ON = !!PID && (!isTestRun || urlParams.get("pidgate") === "1");
+  let duplicateBlocked = false;
+  async function pidGate(mode){
+    try {
+      const ctl = new AbortController(); const to = setTimeout(function(){ ctl.abort(); }, 6000);
+      const r = await fetch(PID_GATE_URL, { method: "POST", headers: { "Content-Type": "text/plain" }, signal: ctl.signal,
+        body: JSON.stringify({ study: studyId, pid: PID, uid: firebaseUserId, mode: mode }) });
+      clearTimeout(to);
+      if (!r.ok) throw new Error("http " + r.status);
+      return await r.json();
+    } catch (e) { return { error: String((e && e.message) || e) }; }
+  }
+  function showAlreadyParticipated(){
+    const o = document.createElement("div");
+    o.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;font-family:'Open Sans',Arial,sans-serif;";
+    o.innerHTML = '<div style="background:#fff;border-left:8px solid #5f6b7a;border-radius:12px;padding:32px 44px;max-width:680px;font-size:22px;line-height:1.6;box-shadow:0 10px 40px rgba(0,0,0,.3);">' +
+      '<p style="margin:0 0 24px 0;">You have already participated in this study.<br>Participation is limited to one time only.</p>' +
+      '<p style="margin:0 0 28px 0;">Please <b>return</b> your submission by <b>closing this study</b> and clicking <b>\u2018Stop Without Completing\u2019</b> on Prolific.</p>' +
+      '<div style="text-align:center;"><button id="dupOk" style="background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:12px 40px;font-size:20px;cursor:pointer;">OK</button></div></div>';
+    document.body.appendChild(o);
+    document.getElementById("dupOk").onclick = function(){ try { window.close(); } catch (e) {} };
+  }
+  let pidCheckStatus = PID_GATE_ON ? "pending" : (PID ? "skipped_test_run" : "no_pid");
+  if (PID_GATE_ON) {
+    const g = await pidGate("check");           // read only: nothing is written until the participant consents
+    if (g.exists) { duplicateBlocked = true; showAlreadyParticipated(); await new Promise(function(){}); }   // stop here: no randomization, no record
+    pidCheckStatus = g.error ? ("unavailable: " + g.error) : "passed";   // if the function is unreachable the study still runs, and this is logged
+  }
+
   const assignedCondition = forced
     ? FORCE_MAP[forcedName]
     : (await blockRandomization(studyId, CONDITION_NAME, 4, maxCompletionTimeMinutes, 1))[0];
@@ -356,11 +391,26 @@
     blockPosition = (_pos === 1) ? "end" : "start";
   }
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
-  const basePath = studyId + "/participantData/" + firebaseUserId;
   // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
   // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button; v4 = v3 + new AI-use options + unified fonts/compact chat layout (the redundant `skipped` field was dropped; use `gave_up`); post-study surveys no longer show the side panel and the AI-use question has the new six options.
-  const EXPERIMENT_VERSION = "v4_posttest_emh_cannot_answer_survey_options_layout_2026-11-23";
+  const EXPERIMENT_VERSION = "v4_posttest_emh_cannot_answer_survey_options_layout_2026-11-24";
+  // The record lives under the Prolific ID (easy to find a person). Test links without PROLIFIC_PID use the Firebase user id.
+  // If the database rules refuse the Prolific-ID path, fall back to the Firebase user id (keyType records which one was used).
+  let participantKey = PID || firebaseUserId;
+  let keyType = PID ? "prolific_pid" : "firebase_uid";
+  let basePath = studyId + "/participantData/" + participantKey;
+  if (PID) {
+    try {
+      await Promise.race([writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION), new Promise(function(r){ setTimeout(r, 4000); })]);
+    } catch (e) {
+      console.warn("Write under the Prolific ID was refused, using the Firebase user id instead:", e);
+      participantKey = firebaseUserId; keyType = "firebase_uid_fallback"; basePath = studyId + "/participantData/" + participantKey;
+    }
+  }
   writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION);
+  writeRealtimeDatabase(basePath + "/keyType", keyType);
+  writeRealtimeDatabase(basePath + "/firebaseUid", firebaseUserId);
+  writeRealtimeDatabase(basePath + "/pidCheck", pidCheckStatus);
   writeRealtimeDatabase(basePath + "/assignedCondition", CONDITION_LABEL);
   if (blockPosition) { writeRealtimeDatabase(basePath + "/blockPosition", blockPosition); }
   if (forced) { writeRealtimeDatabase(basePath + "/forcedCondition", true); }
@@ -376,6 +426,7 @@
   var allPuzzleChatLogs = {}; // Store chat logs for each puzzle by puzzle identifier
   var currentPuzzleId = null; // Track which puzzle is currently active
   var puzzleStartTime, puzzleCompletionTime, userSolved;
+  var currentTrialOrder = null;   // 1-based position of the problem now on screen; the same number prefixes its trial key and its chat key
   // New tracking variables per requirements
   var puzzleGaveUp = false;              // whether user clicked Give Up (and had not already solved correctly)
   var puzzleSolvedCorrectly = false;     // whether the answer is correct
@@ -386,9 +437,12 @@
       if (!allPuzzleChatLogs[currentPuzzleId]) {
         allPuzzleChatLogs[currentPuzzleId] = [];
       }
+      messageObj.ms_since_problem_start = Date.now() - puzzleStartTime;   // when in the problem this message was sent / received
+      messageObj.trial_order = currentTrialOrder;
       allPuzzleChatLogs[currentPuzzleId].push(messageObj);
       const _idx = String(allPuzzleChatLogs[currentPuzzleId].length - 1).padStart(3, '0');
-      writeRealtimeDatabase(basePath + '/chat/' + currentPuzzleId + '/' + _idx, messageObj);
+      const _chatKey = String(currentTrialOrder).padStart(2, "0") + "_" + currentPuzzleId;   // same key as trials/<NN>_<puzzle_id>
+      writeRealtimeDatabase(basePath + '/chat/' + _chatKey + '/' + _idx, messageObj);
     }
   };
 
@@ -442,9 +496,15 @@
   const FULLSCREEN_ON = (urlParams.get("fullscreen") !== "0") &&
     !!(document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen);
   var FS = { wanted: false, pending: false, finished: false };
+  // Refreshing restarts the study, so ask for confirmation once the participant has consented, until the study is over.
+  var studyUnderway = false;
+  window.addEventListener("beforeunload", function(e){
+    if (studyUnderway && !FS.finished) { e.preventDefault(); e.returnValue = ""; return ""; }
+  });
   var fsExits = {};            // puzzleId -> number of times full screen was left
   var fsOutMs = {};            // puzzleId -> total ms spent out of full screen (counted from the exit to the next re-entry)
   var fsOutSince = null, fsOutPuzzle = null;
+  var fsEverEntered = false, fsIn = false, fsRequestedAt = null;
   function fsOutFor(id){ return (fsOutMs[id] || 0) + ((fsOutSince !== null && fsOutPuzzle === id) ? (Date.now() - fsOutSince) : 0); }
   function fsElement(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
   const fsBanner = document.createElement("div");
@@ -461,6 +521,8 @@
   async function requestFS(via){
     if (!FULLSCREEN_ON || FS.finished || FS.pending || fsElement()) return;
     FS.pending = true;
+    fsRequestedAt = Date.now();
+    lockEscape();                       // ask for the Esc lock before entering too, so a very quick Esc press does not slip through
     const el = document.documentElement;
     let info;
     try {
@@ -475,19 +537,39 @@
     logFocusEvent("fullscreen_request", info);
   }
   function ensureFS(via){ if (FS.wanted && !FS.finished && !FS.pending && !fsElement()) requestFS(via); }
-  function onFsChange(){
-    if (fsElement()) {
-      FS.wanted = true; setFsBanner(false);
-      let outMs = null;
-      if (fsOutSince !== null) { outMs = Date.now() - fsOutSince; fsOutMs[fsOutPuzzle] = (fsOutMs[fsOutPuzzle] || 0) + outMs; fsOutSince = null; fsOutPuzzle = null; }
-      logFocusEvent("fullscreen_enter", outMs === null ? { via: "change" } : { via: "change", out_of_fullscreen_ms: outMs });
-    } else if (FS.wanted && !FS.finished) {
-      fsExits[awayKey()] = (fsExits[awayKey()] || 0) + 1;
-      if (fsOutSince === null) { fsOutSince = Date.now(); fsOutPuzzle = awayKey(); }
-      setFsBanner(true);
-      logFocusEvent("fullscreen_exit", { via: "change" });
-    }
+  function fsStatusWrite(){            // small live status, so it exists even if the participant closes the tab before the end
+    let n = 0; Object.keys(fsExits).forEach(function(k){ n += fsExits[k]; });
+    writeRealtimeDatabase(basePath + "/fullscreenStatus", { ever_entered: fsEverEntered, in_fullscreen_now: !!fsElement(), exits_so_far: n, updated_at: new Date().toISOString() });
   }
+  function fsBeginOut(kind){           // a full-screen exit starts (from the change event, the watchdog, or a request that never succeeded)
+    fsIn = false;
+    if (fsOutSince !== null) return;
+    const k = awayKey();
+    fsExits[k] = (fsExits[k] || 0) + 1;
+    fsOutSince = Date.now(); fsOutPuzzle = k;
+    setFsBanner(true);
+    logFocusEvent("fullscreen_exit", { via: kind, ever_entered: fsEverEntered });
+    fsStatusWrite();
+  }
+  function fsBackIn(via){              // full screen is active
+    if (fsIn) return;
+    fsIn = true; FS.wanted = true; fsEverEntered = true; setFsBanner(false); lockEscape();
+    let outMs = null;
+    if (fsOutSince !== null) { outMs = Date.now() - fsOutSince; fsOutMs[fsOutPuzzle] = (fsOutMs[fsOutPuzzle] || 0) + outMs; fsOutSince = null; fsOutPuzzle = null; }
+    logFocusEvent("fullscreen_enter", outMs === null ? { via: via } : { via: via, out_of_fullscreen_ms: outMs });
+    fsStatusWrite();
+  }
+  function onFsChange(){
+    if (fsElement()) fsBackIn("change");
+    else if (FS.wanted && !FS.finished) fsBeginOut("change");
+  }
+  // Watchdog: also catches a missed event, and a request that was cancelled (e.g. Esc pressed while entering) or never granted.
+  setInterval(function(){
+    if (!FS.wanted || FS.finished) return;
+    if (fsElement()) { if (!fsIn) fsBackIn("poll"); }
+    else if (fsEverEntered) fsBeginOut("poll");
+    else if (fsRequestedAt !== null && Date.now() - fsRequestedAt > 3000) fsBeginOut("never_entered");
+  }, 500);
   document.addEventListener("fullscreenchange", onFsChange);
   document.addEventListener("webkitfullscreenchange", onFsChange);
   document.addEventListener("click", function(){ ensureFS("click_reenter"); }, true);
@@ -510,6 +592,7 @@
       }
     },
     on_finish: function(){
+      if (duplicateBlocked) { stopFullscreen(); return; }     // second attempt: nothing is saved or finalized
       if (consentDeclined) {
         // Declined consent: no completion code, no finish page, and this person must not count as a completed participant
         // (their condition slot is not finalized, so it is released after the timeout). Close the window if the browser allows it.
@@ -518,6 +601,7 @@
         setTimeout(function(){ try { window.close(); } catch (e) {} }, 2500);
         return;
       }
+      const _fsAtEnd = !!fsElement();
       stopFullscreen();   // study is over: release Esc and leave full screen
       userReturned();   // close any absence still open
       let _tc = 0, _tm = 0, _fx = 0, _fo = 0;
@@ -526,7 +610,7 @@
       Object.keys(fsOutMs).forEach(k => { _fo += fsOutMs[k]; });
       if (fsOutSince !== null) { _fo += Date.now() - fsOutSince; }
       const writes = Promise.all([
-        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm, total_fullscreen_exits: _fx, total_fullscreen_out_ms: _fo }),
+        writeRealtimeDatabase(basePath + "/windowLeaveSummary", { total_leaves: _tc, total_away_ms: _tm, total_fullscreen_exits: _fx, total_fullscreen_out_ms: _fo, fullscreen_ever_entered: fsEverEntered, fullscreen_at_end: _fsAtEnd }),
         writeRealtimeDatabase(basePath + "/completedAt", new Date().toISOString()),
         forced ? Promise.resolve() : finalizeBlockRandomization(studyId, CONDITION_NAME),
         (forced || !blockPosition) ? Promise.resolve() : finalizeBlockRandomization(studyId, BLOCKPOS_NAME)
@@ -587,6 +671,13 @@
           jsPsych.endExperiment(noConsentPage);
         } else {
           writeRealtimeDatabase(basePath + "/consent", "agreed");
+          studyUnderway = true;         // from here on, refreshing or closing the page asks for confirmation
+          if (PID_GATE_ON) {            // claim the Prolific ID (a second tab opened before this one consented is stopped here)
+            pidGate("claim").then(function(g){
+              if (g && g.exists && !g.mine) { duplicateBlocked = true; stopFullscreen(); showAlreadyParticipated(); jsPsych.endExperiment(""); }
+              else if (g && g.error) { writeRealtimeDatabase(basePath + "/pidClaim", "unavailable: " + g.error); }
+            });
+          }
           startFullscreen("consent");   // the consent click is the user gesture browsers require
         }
       }
@@ -1154,6 +1245,7 @@
   // aiOn (training only): whether the AI chat is available on this problem. Defaults to true for non-control participants.
   function setupPuzzle(p, showSidebar, aiOn){
     puzzleStartTime = Date.now();
+    currentTrialOrder = trialCounter + 1;
     userSolved = false;
     puzzleGaveUp = false;
     puzzleSolvedCorrectly = false;
@@ -1405,13 +1497,14 @@
     data.chat_logs = allPuzzleChatLogs[p.id] || [];
     // write this trial to Firebase right away
     trialCounter += 1;
-    const _key = String(trialCounter).padStart(2, "0") + "_" + p.id;
+    const _order = currentTrialOrder || trialCounter;
+    const _key = String(_order).padStart(2, "0") + "_" + p.id;
     writeRealtimeDatabase(basePath + "/trials/" + _key, {
       puzzle_id: p.id,
       puzzle_type: p.type,
       block: p.block || null,
       difficulty: p.difficulty || ({1: "easy", 2: "medium", 3: "hard"}[p.block] || null),
-      order: trialCounter,
+      order: _order,
       condition: CONDITION_LABEL,
       block_position: blockPosition,
       ai_available: currentAIAvailable,
@@ -1497,6 +1590,7 @@
         `<div style="width:1000px; text-align:left;">
           <p>In this study, we want you to work through the fraction problems on your own, without an AI assistant. We highly encourage you to use paper and pen, and take your time to work through the solutions.</p>
           <p>Please don't use AI tools, Calculator, or Google to solve the problems.</p>
+          <p style="color:#b71c1c;"><b>Please do not refresh or close this page at any point during the study.</b> Refreshing ends your participation and you will not be able to continue.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
         </div>`
@@ -1510,6 +1604,7 @@
         `<div style="width:1000px; text-align:left;">
           <p>On some problems you will have access to an AI assistant (ChatGPT) to help you solve them. When it is available, the chat will appear on the right side of the screen, and you can use it however you like -- feel free to ask it for hints, answers, or solutions.</p>
           <p>On the other problems, ChatGPT will not be available, and the right side of the screen will say so. We highly encourage you to use paper and pen, and take your time to work through the solutions. When ChatGPT isn't available, please don't use other AI tools, Calculator, or Google.</p>
+          <p style="color:#b71c1c;"><b>Please do not refresh or close this page at any point during the study.</b> Refreshing ends your participation and you will not be able to continue.</p>
           <p><b>Important:</b> Your payment does NOT depend on how many problems you answer correctly.</p>
           <p>Please press next to continue.</p>
         </div>`
