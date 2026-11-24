@@ -1,22 +1,20 @@
 // Cloud Function: one attempt per Prolific ID.
 // Add this to functions/index.js of the Firebase project that hosts the /chat function (aiassist-exp), then deploy:
-//     firebase deploy --only functions:pidGate
+//     firebase deploy --only functions:pidGate --project aiassist-exp
+// (v2 syntax, matching the /chat function. In index.js: exports.pidGate = require("./pidGate_function").pidGate;)
 // The experiment page calls it twice:
 //   mode "check": when the link opens, before the consent form. Reads only. If the ID is already claimed, the page shows
 //                 "You have already participated" and stops (no condition is assigned, nothing is written).
 //   mode "claim": when the participant agrees to the consent form. Writes <study>/participantIndex/<PID> once, atomically.
 // To let someone retry (for example after a browser crash), delete <study>/participantIndex/<PID> in the Firebase console.
-const functions = require("firebase-functions");
+const { onRequest } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 if (!admin.apps.length) admin.initializeApp();
 
 const STUDY_OK = /^(aiAssistFractions[A-Za-z0-9_]*|tests)$/;   // the real study branches and the test branch
 const PID_OK = /^[A-Za-z0-9_-]{1,64}$/;
 
-exports.pidGate = functions.https.onRequest(async (req, res) => {
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type");
+exports.pidGate = onRequest({ cors: true, region: "us-central1", invoker: "public" }, async (req, res) => {
   if (req.method === "OPTIONS") return res.status(204).send("");
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
 
