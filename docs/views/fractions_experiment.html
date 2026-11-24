@@ -401,7 +401,7 @@
   let basePath = studyId + "/participantData/" + participantKey;
   if (PID) {
     try {
-      await Promise.race([writeRealtimeDatabase(basePath + "/experimentVersion", EXPERIMENT_VERSION), new Promise(function(r){ setTimeout(r, 4000); })]);
+      await Promise.race([writeRealtimeDatabase(basePath + "/firebaseUid", firebaseUserId), new Promise(function(r){ setTimeout(r, 4000); })]);   // must be the first write: the database rules use it as the record owner
     } catch (e) {
       console.warn("Write under the Prolific ID was refused, using the Firebase user id instead:", e);
       participantKey = firebaseUserId; keyType = "firebase_uid_fallback"; basePath = studyId + "/participantData/" + participantKey;
