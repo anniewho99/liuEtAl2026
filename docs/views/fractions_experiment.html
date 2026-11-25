@@ -393,7 +393,7 @@
   const CONDITION_LABEL = COND_NAMES[assignedCondition];   // block start/end is stored separately as blockPosition
   // Bump this string whenever the participant-facing procedure changes, so each record says which version it saw.
   // Records written before this tag existed have no experimentVersion (the parser labels them "v1_condition_specific_instructions"). v2 = shared AI instructions; v3 = v2 + post-test easy/medium/hard + "Cannot answer" button; v4 = v3 + new AI-use options + unified fonts/compact chat layout (the redundant `skipped` field was dropped; use `gave_up`); post-study surveys no longer show the side panel and the AI-use question has the new six options.
-  const EXPERIMENT_VERSION = "v4_posttest_emh_cannot_answer_survey_options_layout_consent20min_2026-11-25";
+  const EXPERIMENT_VERSION = "v4_posttest_emh_cannot_answer_survey_options_layout_consent20min_fsfix_2026-11-25";
   // The record lives under the Prolific ID (easy to find a person). Test links without PROLIFIC_PID use the Firebase user id.
   // If the database rules refuse the Prolific-ID path, fall back to the Firebase user id (keyType records which one was used).
   let participantKey = PID || firebaseUserId;
@@ -507,6 +507,14 @@
   var fsEverEntered = false, fsIn = false, fsRequestedAt = null;
   function fsOutFor(id){ return (fsOutMs[id] || 0) + ((fsOutSince !== null && fsOutPuzzle === id) ? (Date.now() - fsOutSince) : 0); }
   function fsElement(){ return document.fullscreenElement || document.webkitFullscreenElement || null; }
+  // Second signal that does not depend on the Fullscreen API: in real full screen the page fills the whole screen. Some browsers keep
+  // document.fullscreenElement set (and send no event) after the participant has left full screen, so the API alone cannot be trusted.
+  function fsLooksFull(){
+    const sh = window.screen && screen.height, sw = window.screen && screen.width;
+    if (!sh || !sw) return true;                               // cannot tell: do not flag
+    return (window.innerHeight / sh >= 0.93) && (window.innerWidth / sw >= 0.97);
+  }
+  var fsSizeBadSince = null;
   const fsBanner = document.createElement("div");
   fsBanner.textContent = "This study runs in full screen. Click anywhere or press any key to return to full screen.";
   fsBanner.style.cssText = "display:none;position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#b71c1c;color:#fff;" +
@@ -519,7 +527,7 @@
     catch (err) { return "failed: " + String((err && err.message) || err); }
   }
   async function requestFS(via){
-    if (!FULLSCREEN_ON || FS.finished || FS.pending || fsElement()) return;
+    if (!FULLSCREEN_ON || FS.finished || FS.pending || fsElement()) return;   // (ensureFS first leaves a stale API full screen)
     FS.pending = true;
     fsRequestedAt = Date.now();
     lockEscape();                       // ask for the Esc lock before entering too, so a very quick Esc press does not slip through
@@ -536,19 +544,29 @@
     if (info.outcome === "entered") info.keyboard_lock = await lockEscape();
     logFocusEvent("fullscreen_request", info);
   }
-  function ensureFS(via){ if (FS.wanted && !FS.finished && !FS.pending && !fsElement()) requestFS(via); }
+  function ensureFS(via){
+    if (!FS.wanted || FS.finished || FS.pending) return;
+    if (!fsElement()) { requestFS(via); return; }
+    if (!fsIn) {                       // the API still says full screen but the screen says otherwise: leave it, then enter again
+      try { Promise.resolve((document.exitFullscreen || document.webkitExitFullscreen).call(document)).catch(function(){}).then(function(){ requestFS(via); }); } catch (e) { requestFS(via); }
+    }
+  }
   function fsStatusWrite(){            // small live status, so it exists even if the participant closes the tab before the end
     let n = 0; Object.keys(fsExits).forEach(function(k){ n += fsExits[k]; });
-    writeRealtimeDatabase(basePath + "/fullscreenStatus", { ever_entered: fsEverEntered, in_fullscreen_now: !!fsElement(), exits_so_far: n, updated_at: new Date().toISOString() });
+    writeRealtimeDatabase(basePath + "/fullscreenStatus", { ever_entered: fsEverEntered, in_fullscreen_now: !!fsIn, exits_so_far: n, updated_at: new Date().toISOString() });
   }
-  function fsBeginOut(kind){           // a full-screen exit starts (from the change event, the watchdog, or a request that never succeeded)
+  function fsBeginOut(kind, startedAt){   // a full-screen exit starts (from the change event, the watchdog, the size check, or a request that never succeeded)
     fsIn = false;
     if (fsOutSince !== null) return;
     const k = awayKey();
+    // The browser may only deliver the event once the page is visible again. If the window was away when the exit was noticed, the exit
+    // happened no later than the moment it went away, so count the time out of full screen from then.
+    let t0 = startedAt || Date.now();
+    if (!startedAt && awaySince !== null && fsEverEntered && kind !== "never_entered") t0 = Math.min(t0, awaySince);
     fsExits[k] = (fsExits[k] || 0) + 1;
-    fsOutSince = Date.now(); fsOutPuzzle = k;
+    fsOutSince = t0; fsOutPuzzle = k;
     setFsBanner(true);
-    logFocusEvent("fullscreen_exit", { via: kind, ever_entered: fsEverEntered });
+    logFocusEvent("fullscreen_exit", { via: kind, ever_entered: fsEverEntered, detected_late_ms: Date.now() - t0 });
     fsStatusWrite();
   }
   function fsBackIn(via){              // full screen is active
@@ -560,16 +578,26 @@
     fsStatusWrite();
   }
   function onFsChange(){
-    if (fsElement()) fsBackIn("change");
+    if (fsElement()) { if (fsLooksFull()) fsBackIn("change"); }      // the size check in the watchdog confirms it once the window has finished resizing
     else if (FS.wanted && !FS.finished) fsBeginOut("change");
   }
   // Watchdog: also catches a missed event, and a request that was cancelled (e.g. Esc pressed while entering) or never granted.
-  setInterval(function(){
+  function fsCheck(){
     if (!FS.wanted || FS.finished) return;
-    if (fsElement()) { if (!fsIn) fsBackIn("poll"); }
-    else if (fsEverEntered) fsBeginOut("poll");
-    else if (fsRequestedAt !== null && Date.now() - fsRequestedAt > 3000) fsBeginOut("never_entered");
-  }, 500);
+    if (fsElement()) {
+      if (fsLooksFull()) { fsSizeBadSince = null; if (!fsIn) fsBackIn("poll"); }
+      else if (fsEverEntered && fsIn) {                  // API says full screen, the window does not fill the screen: wait out the enter/exit animation, then count it
+        if (fsSizeBadSince === null) fsSizeBadSince = Date.now();
+        else if (Date.now() - fsSizeBadSince >= 1500) fsBeginOut("size", fsSizeBadSince);
+      }
+    } else {
+      fsSizeBadSince = null;
+      if (fsEverEntered) fsBeginOut("poll");
+      else if (fsRequestedAt !== null && Date.now() - fsRequestedAt > 3000) fsBeginOut("never_entered");
+    }
+  }
+  setInterval(fsCheck, 500);
+  window.addEventListener("resize", fsCheck);
   document.addEventListener("fullscreenchange", onFsChange);
   document.addEventListener("webkitfullscreenchange", onFsChange);
   document.addEventListener("click", function(){ ensureFS("click_reenter"); }, true);
@@ -601,7 +629,7 @@
         setTimeout(function(){ try { window.close(); } catch (e) {} }, 2500);
         return;
       }
-      const _fsAtEnd = !!fsElement();
+      const _fsAtEnd = !!fsIn;
       stopFullscreen();   // study is over: release Esc and leave full screen
       userReturned();   // close any absence still open
       let _tc = 0, _tm = 0, _fx = 0, _fo = 0;
@@ -644,7 +672,7 @@
   var timeline = [];
 
   /* ---------- CONSENT ---------- */
-    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>Learning Fractions</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about how people learn and solve fractions problems. The survey will last about 20 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. You may have an AI tool available on some problems; otherwise you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, any messages you type into a chat tool if you have one, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better ways to support learning.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
+    var consentPage = "<div style=\"width:1060px;\" align=\"left\">\n<h1>Consent</h1>\n<h2>Learning Fractions</h2>\n\n<h3>Researcher Information</h3>\n<p><b>Researcher:</b> ZhaoBin Li<br>\n<b>Department:</b> Cognitive Sciences<br>\n<b>Email:</b> <a href=\"mailto:zhaobin.li@uci.edu\">zhaobin.li@uci.edu</a></p>\n\n<h3>Study Overview</h3>\n<p>Please read the information below and ask questions about anything that you do not understand. A researcher listed above will be available to answer your questions.</p>\n<p>You are being asked to participate in a research study. Participation in this study is voluntary. Please use the Chrome browser to run the experiment.</p>\n<p>We would like you to complete a survey to learn more about how people learn and solve fractions problems. The survey will last about 20 minutes.</p>\n<p>In this study, you will solve fractions problems on a computer. Depending on your group, you may have an AI tool available on some problems; otherwise you will work on your own. You will also answer a few brief questions about your experience. The study runs in full screen mode, so please stay in full screen while you work. We will record your answers, any messages you type into a chat tool if you have one, and how long you take on each problem.</p>\n<p>There are no direct benefits from participation in the study. However, this study may help us to design better ways to support learning.</p>\n<p>This research is for residents of the United States over the age of 18; if you are not a resident of the United States and/or under the age of 18, please do not complete this survey.</p>\n<p>You will receive the amount stated in the Prolific study description. To get compensated, you have to be redirected back to Prolific.</p>\n\n<h3>Data Security &amp; Future Research Use</h3>\n<p>All research data collected will be stored securely and confidentially on password-protected online and local storage.</p>\n<p><b>Future Research Use:</b> Researchers will use your information to conduct this study. Once the study is done using your information, we may share them with other researchers so they can use them for other studies in the future. We will not share your name or any other private identifiable information that would let the researchers know who you are. We will not ask you for additional permission to share this de-identified information.</p>\n\n<h3>Questions &amp; Contact Information</h3>\n<p>If you have any comments, concerns, or questions regarding this study, please contact the researchers listed at the top of this form.</p>\n<p>If you have questions or concerns about your rights as a research participant, you can contact the UCI Institutional Review Board by:</p>\n<ul>\n<li><b>Phone:</b> (949) 824-8170</li>\n<li><b>Email:</b> <a href=\"mailto:IRB@research.uci.edu\">IRB@research.uci.edu</a></li>\n<li><b>Mail:</b> University of California, Irvine, Office of Research, Irvine, CA 92697-7600</li>\n</ul>\n\n<h3>What is an IRB?</h3>\n<p>An Institutional Review Board (IRB) is a committee made up of scientists and non-scientists. The IRB’s role is to protect the rights and welfare of human subjects involved in research. The IRB also assures that the research complies with applicable regulations, laws, and institutional policies.</p>\n\n<p>If you want to participate in this study, select &ldquo;I consent to participate&rdquo; below and click Continue to start the survey.</p>\n</div>";
     var noConsentPage = '<div style="width:1000px;"><p>Thank you. You must consent in order to participate in this study.</p>' +
       '<p>This window will close automatically if your browser allows it. If it does not, you can close this window now. ' +
       'If you came from Prolific, please return your submission on Prolific (select "Stop without completing").</p></div>';
